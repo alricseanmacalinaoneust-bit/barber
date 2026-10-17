@@ -1,6 +1,6 @@
 // Front-desk screens shared by the cashier and admin pages, available as window.Desk.
 (function () {
-  const { api, escapeHTML, money, time, minutesSince, setMessage, statusPill, openDialog } = window.App;
+  const { api, escapeHTML, money, time, waitedText, minutesSince, setMessage, statusPill, openDialog, confirmDialog, toast, busy } = window.App;
 
   const METHODS = [
     { value: "cash", label: "Cash" },
@@ -9,19 +9,21 @@
     { value: "other", label: "Other" }
   ];
 
+  const LONG_WAIT_MINUTES = 30;
+
   function methodLabel(value) {
     return METHODS.find(m => m.value === value)?.label || value;
   }
 
   function methodPicker(name = "method") {
-    return `<div class="method-picker">${METHODS.map((m, i) => `
+    return `<div class="method-picker" role="radiogroup" aria-label="Payment method">${METHODS.map((m, i) => `
       <label><input type="radio" name="${name}" value="${m.value}"${i === 0 ? " checked" : ""}> ${m.label}</label>`).join("")}
     </div>`;
   }
 
-  function serviceOptions(services) {
+  function serviceOptions(services, selectedId = "") {
     return '<option value="">Select a service</option>' + services.map(s =>
-      `<option value="${s.id}">${escapeHTML(s.name)} · ${money(s.price)} · ${s.durationMinutes} min</option>`
+      `<option value="${s.id}"${s.id === selectedId ? " selected" : ""}>${escapeHTML(s.name)} · ${money(s.price)} · ${s.durationMinutes} min</option>`
     ).join("");
   }
 
@@ -29,14 +31,29 @@
     return `<tr class="empty-row"><td colspan="${columns}">${escapeHTML(text)}</td></tr>`;
   }
 
+  function statCards(cards) {
+    return cards.map(([label, value, help]) => `
+      <article class="card">
+        <div class="stat-label">${label}</div>
+        <div class="stat-value">${value}</div>
+        <div class="stat-help">${help}</div>
+      </article>`).join("");
+  }
+
   // ---------- Front desk: the live queue ----------
 
-  async function queue(body, actions) {
-    actions.innerHTML = '<a class="secondary-btn" href="/display.html" target="_blank" rel="noopener">Open queue screen ↗</a>';
+  async function queue(body, actions, user) {
+    const isAdmin = user?.role === "admin";
+
+    actions.innerHTML = `
+      <button class="primary-btn narrow-only" type="button" id="toggleWalkIn" aria-controls="walkInForm" aria-expanded="false">+ Add walk-in</button>
+      <button class="secondary-btn" type="button" id="refreshDesk">Refresh</button>
+      <a class="secondary-btn" href="/display.html" target="_blank" rel="noopener">Open queue screen ↗</a>
+      ${isAdmin ? '<button class="danger-btn" type="button" id="clearQueue" title="Cancels everyone still waiting today">End of day…</button>' : ""}`;
 
     body.innerHTML = `
       <section class="stats stats-4" id="deskStats"></section>
-      <p class="message" id="deskMessage" role="status" aria-live="polite"></p>
+      <p class="updated muted small" id="deskUpdated" aria-live="off"></p>
 
       <section class="desk-grid">
         <div class="stack">
@@ -52,7 +69,7 @@
             <div class="card-heading"><h2>Now serving</h2></div>
             <div class="table-wrap">
               <table class="data-table">
-                <thead><tr><th>#</th><th>Customer</th><th>Service</th><th>Barber</th><th>Started</th><th></th></tr></thead>
+                <thead><tr><th>#</th><th>Customer</th><th>Service</th><th>Barber</th><th>Started</th><th><span class="sr-only">Actions</span></th></tr></thead>
                 <tbody id="servingRows"></tbody>
               </table>
             </div>
@@ -62,7 +79,7 @@
             <div class="card-heading"><h2>Waiting</h2><span class="muted" id="waitingCount"></span></div>
             <div class="table-wrap">
               <table class="data-table">
-                <thead><tr><th>#</th><th>Customer</th><th>Service</th><th>Prefers</th><th>Waiting</th><th></th></tr></thead>
+                <thead><tr><th>#</th><th>Customer</th><th>Service</th><th>Prefers</th><th>Waiting</th><th><span class="sr-only">Actions</span></th></tr></thead>
                 <tbody id="waitingRows"></tbody>
               </table>
             </div>
@@ -79,17 +96,17 @@
           </article>
         </div>
 
-        <form class="card form-card" id="walkInForm">
+        <form class="card form-card collapsed" id="walkInForm">
           <h2>Add a walk-in</h2>
           <p class="muted">Just a name and a service. No account needed.</p>
 
           <label for="walkInName">Customer name *</label>
-          <input id="walkInName" name="name" maxlength="60" placeholder="e.g. Juan Dela Cruz">
+          <input id="walkInName" name="name" maxlength="60" placeholder="e.g. Juan Dela Cruz" autocomplete="off">
 
           <details class="account-link">
             <summary>Customer has an account?</summary>
             <label for="walkInEmail">Their account email</label>
-            <input id="walkInEmail" name="customerEmail" type="email" placeholder="Adds the visit to their history">
+            <input id="walkInEmail" name="customerEmail" type="email" placeholder="Adds the visit to their history" autocomplete="off">
           </details>
 
           <label for="walkInService">Service *</label>
@@ -116,32 +133,30 @@
       const finished = tickets.filter(t => !["waiting", "serving"].includes(t.status)).reverse();
       const completed = finished.filter(t => t.status === "completed");
       const collected = completed.reduce((sum, t) => sum + (t.amountPaid || 0), 0);
+      const freeBarbers = barbers.filter(b => b.status === "available").length;
 
-      $("deskStats").innerHTML = [
-        ["Waiting", waiting.length, "Customers in line"],
-        ["Being served", serving.length, `${barbers.filter(b => b.status === "available").length} barber(s) free`],
+      $("deskStats").innerHTML = statCards([
+        ["Waiting", waiting.length, waiting.length ? `Longest wait: ${waitedText(waiting[0].createdAt)}` : "No one in line"],
+        ["Being served", serving.length, `${freeBarbers} barber(s) free`],
         ["Completed today", completed.length, `${finished.length - completed.length} no-show / cancelled`],
         ["Service sales today", money(collected), "Product sales are under Payments"]
-      ].map(([label, value, help]) => `
-        <article class="card">
-          <div class="stat-label">${label}</div>
-          <div class="stat-value">${value}</div>
-          <div class="stat-help">${help}</div>
-        </article>`).join("");
+      ]);
 
       $("barberDesk").innerHTML = barbers.length ? barbers.map(b => {
         const current = serving.find(t => t.barberId === b.id);
-        const waitingForBarber = waiting.filter(t => !t.preferredBarberId || t.preferredBarberId === b.id).length;
+        const callable = waiting.filter(t => !t.preferredBarberId || t.preferredBarberId === b.id).length;
+        const label = b.status === "busy" && current ? `Serving #${current.queueNumber}` : b.status === "available" ? "Free" : "Off duty";
 
         return `
           <div class="barber-row">
             <div>
               <strong>${escapeHTML(b.name)}</strong>
-              <span class="barber-status ${b.status}">${b.status === "busy" && current ? `Serving #${current.queueNumber}` : b.status === "available" ? "Free" : "Off duty"}</span>
-              <div class="muted small">${waitingForBarber} customer(s) can be called</div>
+              <span class="barber-status ${b.status}">${label}</span>
+              <div class="muted small">${b.status === "busy" && current ? `${escapeHTML(current.customerName)} · ${escapeHTML(current.service)}` : `${callable} customer(s) can be called`}</div>
             </div>
             <div class="row-actions">
-              ${b.status === "available" ? `<button class="primary-btn small" type="button" data-action="call-next" data-barber="${b.id}">Call next</button>` : ""}
+              ${b.status === "available" ? `<button class="primary-btn small" type="button" data-action="call-next" data-barber="${b.id}"${callable ? "" : " disabled"}>Call next</button>` : ""}
+              ${b.status === "busy" && current ? `<button class="primary-btn small" type="button" data-action="complete" data-id="${current.id}">Complete &amp; pay</button>` : ""}
               ${b.status !== "busy" ? `<button class="secondary-btn small" type="button" data-action="duty" data-barber="${b.id}" data-on="${!b.available}">${b.available ? "Set off duty" : "Set on duty"}</button>` : ""}
             </div>
           </div>`;
@@ -162,12 +177,12 @@
 
       $("waitingCount").textContent = `${waiting.length} waiting`;
       $("waitingRows").innerHTML = waiting.length ? waiting.map(t => `
-        <tr>
+        <tr class="${minutesSince(t.createdAt) >= LONG_WAIT_MINUTES ? "long-wait" : ""}">
           <td><strong>#${t.queueNumber}</strong></td>
           <td>${escapeHTML(t.customerName)}${t.hasAccount ? ' <span class="chip">Account</span>' : ""}${t.source === "walk-in" ? ' <span class="chip">Walk-in</span>' : ""}</td>
           <td>${escapeHTML(t.service)}</td>
           <td>${escapeHTML(t.preferredBarberName || "Any")}</td>
-          <td>${minutesSince(t.createdAt)} min</td>
+          <td>${waitedText(t.createdAt)}</td>
           <td class="row-actions">
             <button class="secondary-btn small" type="button" data-action="call" data-id="${t.id}">Call</button>
             <button class="secondary-btn small" type="button" data-action="no-show" data-id="${t.id}">No-show</button>
@@ -189,6 +204,8 @@
       const chosen = barberSelect.value;
       barberSelect.innerHTML = '<option value="">Any barber</option>' + barbers.map(b => `<option value="${b.id}">${escapeHTML(b.name)}</option>`).join("");
       barberSelect.value = chosen;
+
+      $("deskUpdated").textContent = `Updated ${new Date().toLocaleTimeString("en-PH", { hour: "numeric", minute: "2-digit", second: "2-digit" })} · refreshes every 10 seconds`;
     }
 
     async function refresh() {
@@ -196,25 +213,36 @@
         [tickets, barbers] = await Promise.all([api("/api/queue"), api("/api/barbers")]);
         render();
       } catch (error) {
-        setMessage($("deskMessage"), error.message, "error");
+        $("deskUpdated").textContent = `Couldn't refresh: ${error.message}`;
       }
     }
 
-    async function act(request, successText) {
-      try {
-        const result = await request();
-        setMessage($("deskMessage"), successText(result), "success");
-      } catch (error) {
-        setMessage($("deskMessage"), error.message, "error");
-      }
-      await refresh();
+    async function act(button, request, successText) {
+      await busy(button, async () => {
+        let notice;
+        try {
+          const result = await request();
+          notice = [successText(result), "success"];
+        } catch (error) {
+          notice = [error.message, "error"];
+        }
+        await refresh();
+        toast(...notice);
+      });
     }
 
     function completeDialog(ticket) {
+      const current = services.find(s => s.name === ticket.service);
       const { element, close } = openDialog(`
         <form id="payForm">
           <h2>Complete #${ticket.queueNumber} · ${escapeHTML(ticket.customerName)}</h2>
-          <p class="muted">${escapeHTML(ticket.service)} with ${escapeHTML(ticket.barberName)}. Change the amount for extras or discounts.</p>
+          <p class="muted">With ${escapeHTML(ticket.barberName)}. Change the service if they had something else; change the amount for extras or discounts.</p>
+
+          <label for="payService">Service done</label>
+          <select id="payService" name="serviceId">
+            ${current ? "" : `<option value="">${escapeHTML(ticket.service)} · ${money(ticket.price)}</option>`}
+            ${services.map(s => `<option value="${s.id}" data-price="${s.price}"${s.id === current?.id ? " selected" : ""}>${escapeHTML(s.name)} · ${money(s.price)}</option>`).join("")}
+          </select>
 
           <label for="payAmount">Amount (₱)</label>
           <input id="payAmount" name="amount" type="number" min="0" step="0.01" value="${Number(ticket.price || 0)}" required>
@@ -231,7 +259,7 @@
           <div id="cashBox">
             <label for="payReceived">Cash received (₱, optional)</label>
             <input id="payReceived" type="number" min="0" step="0.01">
-            <p class="muted" id="changeText"></p>
+            <p class="change-text" id="changeText"></p>
           </div>
 
           <div class="form-actions">
@@ -242,49 +270,65 @@
         </form>`);
 
       const form = element.querySelector("#payForm");
-      const price = Number(ticket.price || 0);
-      const updateChange = () => {
-        const amount = Number(form.amount.value) || 0;
-        const received = Number(element.querySelector("#payReceived").value);
-        element.querySelector("#changeText").textContent = received ? (received >= amount ? `Change: ${money(received - amount)}` : `Short by ${money(amount - received)}`) : "";
-
-        const discounted = amount < price;
-        element.querySelector("#discountBox").classList.toggle("hidden", !discounted);
-        form.note.required = discounted;
+      const priceOf = () => {
+        const option = form.serviceId.selectedOptions[0];
+        return option?.dataset.price !== undefined ? Number(option.dataset.price) : Number(ticket.price || 0);
       };
 
-      form.addEventListener("input", updateChange);
-      form.addEventListener("change", () => {
+      const update = () => {
+        const amount = Number(form.amount.value) || 0;
+        const received = Number(element.querySelector("#payReceived").value);
+        element.querySelector("#changeText").textContent = received
+          ? (received >= amount ? `Change: ${money(received - amount)}` : `Short by ${money(amount - received)}`)
+          : "";
+
+        const discounted = amount < priceOf();
+        element.querySelector("#discountBox").classList.toggle("hidden", !discounted);
+        form.note.required = discounted;
         element.querySelector("#cashBox").classList.toggle("hidden", form.method.value !== "cash");
+      };
+
+      form.serviceId.addEventListener("change", () => {
+        form.amount.value = priceOf();
+        update();
       });
+      form.addEventListener("input", update);
+      form.addEventListener("change", update);
 
       form.addEventListener("submit", async event => {
         event.preventDefault();
-        try {
-          await api(`/api/queue/${ticket.id}/complete`, {
-            method: "POST",
-            body: { amount: Number(form.amount.value), method: form.method.value, note: form.note.value }
-          });
-          close();
-          setMessage($("deskMessage"), `#${ticket.queueNumber} completed. ${money(form.amount.value)} recorded (${methodLabel(form.method.value)}).`, "success");
-          await refresh();
-        } catch (error) {
-          setMessage(element.querySelector("#payMessage"), error.message, "error");
-        }
+        await busy(event.submitter, async () => {
+          try {
+            await api(`/api/queue/${ticket.id}/complete`, {
+              method: "POST",
+              body: {
+                serviceId: form.serviceId.value || undefined,
+                amount: Number(form.amount.value),
+                method: form.method.value,
+                note: form.note.value
+              }
+            });
+            close();
+            await refresh();
+            toast(`#${ticket.queueNumber} completed. ${money(form.amount.value)} recorded (${methodLabel(form.method.value)}).`);
+          } catch (error) {
+            setMessage(element.querySelector("#payMessage"), error.message, "error");
+          }
+        });
       });
     }
 
     function callDialog(ticket) {
       const free = barbers.filter(b => b.status === "available");
       if (!free.length) {
-        setMessage($("deskMessage"), "No barber is free right now.", "error");
+        toast("No barber is free right now.", "error");
         return;
       }
 
       const { element, close } = openDialog(`
         <form id="callForm">
           <h2>Call #${ticket.queueNumber} · ${escapeHTML(ticket.customerName)}</h2>
-          <p class="muted">${ticket.preferredBarberName ? `Prefers ${escapeHTML(ticket.preferredBarberName)}.` : "No barber preference."}</p>
+          <p class="muted">${ticket.preferredBarberName ? `Prefers ${escapeHTML(ticket.preferredBarberName)}.` : "No barber preference."} Waiting ${waitedText(ticket.createdAt)}.</p>
           <label for="callBarber">Barber</label>
           <select id="callBarber" name="barberId">${free.map(b => `<option value="${b.id}"${b.id === ticket.preferredBarberId ? " selected" : ""}>${escapeHTML(b.name)}</option>`).join("")}</select>
           <div class="form-actions">
@@ -296,18 +340,20 @@
 
       element.querySelector("#callForm").addEventListener("submit", async event => {
         event.preventDefault();
-        try {
-          const called = await api(`/api/queue/${ticket.id}/call`, { method: "POST", body: { barberId: event.target.barberId.value } });
-          close();
-          setMessage($("deskMessage"), `Called #${called.queueNumber} ${called.customerName} to ${called.barberName}.`, "success");
-          await refresh();
-        } catch (error) {
-          setMessage(element.querySelector("#callMessage"), error.message, "error");
-        }
+        await busy(event.submitter, async () => {
+          try {
+            const called = await api(`/api/queue/${ticket.id}/call`, { method: "POST", body: { barberId: event.target.barberId.value } });
+            close();
+            await refresh();
+            toast(`Called #${called.queueNumber} ${called.customerName} to ${called.barberName}.`);
+          } catch (error) {
+            setMessage(element.querySelector("#callMessage"), error.message, "error");
+          }
+        });
       });
     }
 
-    body.addEventListener("click", event => {
+    body.addEventListener("click", async event => {
       const button = event.target.closest("[data-action]");
       if (!button) return;
 
@@ -315,23 +361,25 @@
       const action = button.dataset.action;
 
       if (action === "call-next") {
-        act(
+        act(button,
           () => api("/api/queue/call-next", { method: "POST", body: { barberId: button.dataset.barber } }),
-          t => `Now serving #${t.queueNumber} ${t.customerName} with ${t.barberName}.`
-        );
+          t => `Now serving #${t.queueNumber} ${t.customerName} with ${t.barberName}.`);
       } else if (action === "duty") {
-        act(
+        act(button,
           () => api(`/api/barbers/${button.dataset.barber}/availability`, { method: "PATCH", body: { available: button.dataset.on === "true" } }),
-          () => "Barber availability updated."
-        );
+          () => button.dataset.on === "true" ? "Barber is on duty." : "Barber is off duty.");
       } else if (action === "complete" && ticket) {
         completeDialog(ticket);
       } else if (action === "call" && ticket) {
         callDialog(ticket);
-      } else if (action === "no-show" && ticket && confirm(`Mark #${ticket.queueNumber} ${ticket.customerName} as a no-show?`)) {
-        act(() => api(`/api/queue/${ticket.id}/no-show`, { method: "POST" }), r => r.message);
-      } else if (action === "cancel" && ticket && confirm(`Cancel #${ticket.queueNumber} ${ticket.customerName}?`)) {
-        act(() => api(`/api/queue/${ticket.id}/cancel`, { method: "POST" }), r => r.message);
+      } else if (action === "no-show" && ticket) {
+        if (await confirmDialog(`Mark #${ticket.queueNumber} ${ticket.customerName} as a no-show?`, { title: "No-show", confirmText: "Mark no-show", danger: true })) {
+          act(button, () => api(`/api/queue/${ticket.id}/no-show`, { method: "POST" }), r => r.message);
+        }
+      } else if (action === "cancel" && ticket) {
+        if (await confirmDialog(`Remove #${ticket.queueNumber} ${ticket.customerName} from the queue?`, { title: "Cancel customer", confirmText: "Remove from queue", danger: true })) {
+          act(button, () => api(`/api/queue/${ticket.id}/cancel`, { method: "POST" }), r => r.message);
+        }
       }
     });
 
@@ -339,22 +387,48 @@
       event.preventDefault();
       const form = event.target;
 
-      try {
-        const ticket = await api("/api/queue/walk-in", {
-          method: "POST",
-          body: {
-            name: form.name.value,
-            customerEmail: form.customerEmail.value,
-            serviceId: form.serviceId.value,
-            preferredBarberId: form.preferredBarberId.value
-          }
-        });
-        form.reset();
-        setMessage($("walkInMessage"), `Added ${ticket.customerName} as #${ticket.queueNumber}.`, "success");
-        await refresh();
-      } catch (error) {
-        setMessage($("walkInMessage"), error.message, "error");
+      await busy(event.submitter, async () => {
+        try {
+          const ticket = await api("/api/queue/walk-in", {
+            method: "POST",
+            body: {
+              name: form.name.value,
+              customerEmail: form.customerEmail.value,
+              serviceId: form.serviceId.value,
+              preferredBarberId: form.preferredBarberId.value
+            }
+          });
+          form.reset();
+          form.querySelector("details").open = false;
+          setMessage($("walkInMessage"), "");
+          await refresh();
+          toast(`Added ${ticket.customerName} as #${ticket.queueNumber}.`);
+          form.name.focus();
+        } catch (error) {
+          setMessage($("walkInMessage"), error.message, "error");
+        }
+      });
+    });
+
+    actions.querySelector("#toggleWalkIn").addEventListener("click", event => {
+      const collapsed = $("walkInForm").classList.toggle("collapsed");
+      event.target.setAttribute("aria-expanded", String(!collapsed));
+      if (!collapsed) {
+        $("walkInForm").scrollIntoView({ behavior: "smooth", block: "start" });
+        $("walkInName").focus();
       }
+    });
+
+    actions.querySelector("#refreshDesk").addEventListener("click", event => busy(event.target, refresh));
+
+    actions.querySelector("#clearQueue")?.addEventListener("click", async event => {
+      const count = tickets.filter(t => t.status === "waiting").length;
+      if (!count) {
+        toast("No one is waiting.", "info");
+        return;
+      }
+      if (!await confirmDialog(`Cancel all ${count} customer(s) still waiting today? Use this when the shop closes.`, { title: "End of day", confirmText: "Cancel everyone waiting", danger: true })) return;
+      act(event.target, () => api("/api/queue", { method: "DELETE" }), r => r.message);
     });
 
     await refresh();
@@ -370,21 +444,25 @@
 
     body.innerHTML = `
       <form class="card filter-bar" id="rangeForm">
-        <label>From <input type="date" name="from" value="${App.today()}" required></label>
-        <label>To <input type="date" name="to" value="${App.today()}" required></label>
+        <label>From <input type="date" name="from" value="${App.today()}" max="${App.today()}" required></label>
+        <label>To <input type="date" name="to" value="${App.today()}" max="${App.today()}" required></label>
         <button class="primary-btn" type="submit">Show</button>
-        <button class="secondary-btn" type="button" id="todayBtn">Today</button>
+        <div class="quick-ranges" role="group" aria-label="Quick ranges">
+          <button class="secondary-btn small" type="button" data-range="today">Today</button>
+          <button class="secondary-btn small" type="button" data-range="yesterday">Yesterday</button>
+          <button class="secondary-btn small" type="button" data-range="week">Last 7 days</button>
+          <button class="secondary-btn small" type="button" data-range="month">This month</button>
+        </div>
       </form>
 
       <section class="stats stats-4" id="payTotals"></section>
-      <p class="message" id="payPageMessage" role="status"></p>
 
       <section class="desk-grid">
         <article class="card">
           <div class="card-heading"><h2>Transactions</h2><span class="muted" id="payCount"></span></div>
           <div class="table-wrap">
             <table class="data-table">
-              <thead><tr><th>Time</th><th>Item</th><th>Customer</th><th>Barber</th><th>Method</th><th>Cashier</th><th>Amount</th>${isAdmin ? "<th></th>" : ""}</tr></thead>
+              <thead><tr><th>Time</th><th>Item</th><th>Customer</th><th>Barber</th><th>Method</th><th>Cashier</th><th>Amount</th>${isAdmin ? '<th><span class="sr-only">Actions</span></th>' : ""}</tr></thead>
               <tbody id="payRows"></tbody>
             </table>
           </div>
@@ -417,15 +495,16 @@
     async function loadItems() {
       items = await api("/api/inventory");
       $("saleItem").innerHTML = items.length
-        ? '<option value="">Select a product</option>' + items.map(i => `<option value="${i.id}"${i.quantity < 1 ? " disabled" : ""}>${escapeHTML(i.name)} · ${money(i.price)} · ${i.quantity} in stock</option>`).join("")
-        : '<option value="">No products yet (admin adds them under Inventory)</option>';
+        ? '<option value="">Select a product</option>' + items.map(i => `<option value="${i.id}"${i.quantity < 1 ? " disabled" : ""}>${escapeHTML(i.name)} · ${money(i.price)} · ${i.quantity < 1 ? "out of stock" : `${i.quantity} in stock`}</option>`).join("")
+        : '<option value="">No products yet (the admin adds them under Inventory)</option>';
       updateTotal();
     }
 
     function updateTotal() {
       const item = items.find(i => i.id === $("saleItem").value);
       const qty = Number($("saleQty").value) || 0;
-      $("saleTotal").textContent = item ? `Total: ${money(item.price * qty)}` : "";
+      $("saleQty").max = item ? item.quantity : "";
+      $("saleTotal").textContent = item ? `Total: ${money(item.price * qty)}${qty > item.quantity ? ` · only ${item.quantity} in stock` : ""}` : "";
     }
 
     async function loadReport() {
@@ -433,17 +512,12 @@
         report = await api(`/api/payments?from=${rangeForm.from.value}&to=${rangeForm.to.value}`);
         const t = report.totals;
 
-        $("payTotals").innerHTML = [
+        $("payTotals").innerHTML = statCards([
           ["Total collected", money(t.total), `Services ${money(t.services)} · Products ${money(t.products)}`],
           ["Cash", money(t.byMethod.cash), "Should match the cash drawer"],
           ["GCash", money(t.byMethod.gcash), `Discounts given: ${money(t.discounts)}`],
-          ["Card / other", money(t.byMethod.card + t.byMethod.other), t.voided ? `${t.voided} voided payment(s) not counted` : ""]
-        ].map(([label, value, help]) => `
-          <article class="card">
-            <div class="stat-label">${label}</div>
-            <div class="stat-value">${value}</div>
-            <div class="stat-help">${help}</div>
-          </article>`).join("");
+          ["Card / other", money(t.byMethod.card + t.byMethod.other), t.voided ? `${t.voided} voided payment(s) not counted` : "No voided payments"]
+        ]);
 
         $("payCount").textContent = `${t.count} transaction(s)`;
         $("payRows").innerHTML = report.payments.length ? report.payments.map(p => `
@@ -462,19 +536,34 @@
             ${isAdmin ? `<td class="row-actions">${p.voided ? "" : `<button class="danger-btn small" type="button" data-void="${p.id}">Void</button>`}</td>` : ""}
           </tr>`).join("") : emptyRow(isAdmin ? 8 : 7, "No payments in this period.");
       } catch (error) {
-        setMessage($("payPageMessage"), error.message, "error");
+        toast(error.message, "error");
       }
+    }
+
+    function setRange(range) {
+      const now = new Date();
+      let from = new Date(now);
+      let to = new Date(now);
+      if (range === "yesterday") { from.setDate(now.getDate() - 1); to = new Date(from); }
+      if (range === "week") from.setDate(now.getDate() - 6);
+      if (range === "month") from = new Date(now.getFullYear(), now.getMonth(), 1);
+      rangeForm.from.value = App.dateKey(from);
+      rangeForm.to.value = App.dateKey(to);
+      loadReport();
     }
 
     rangeForm.addEventListener("submit", event => {
       event.preventDefault();
+      if (rangeForm.from.value > rangeForm.to.value) {
+        toast("The start date is after the end date.", "error");
+        return;
+      }
       loadReport();
     });
 
-    $("todayBtn").addEventListener("click", () => {
-      rangeForm.from.value = App.today();
-      rangeForm.to.value = App.today();
-      loadReport();
+    rangeForm.addEventListener("click", event => {
+      const range = event.target.closest("[data-range]")?.dataset.range;
+      if (range) setRange(range);
     });
 
     actions.querySelector("#downloadCsv").addEventListener("click", () => {
@@ -506,7 +595,7 @@
           <label>Corrected payment method</label>
           ${methodPicker("replacementMethod")}
           <div class="form-actions">
-            <button class="danger-btn" type="submit">Void payment</button>
+            <button class="danger-btn solid" type="submit">Void payment</button>
             <button class="secondary-btn" type="button" data-close>Cancel</button>
           </div>
           <p class="message" id="voidMessage"></p>
@@ -515,21 +604,23 @@
       element.querySelector("form").addEventListener("submit", async submitEvent => {
         submitEvent.preventDefault();
         const f = submitEvent.target;
-        try {
-          const result = await api(`/api/payments/${payment.id}/void`, {
-            method: "POST",
-            body: {
-              reason: f.reason.value,
-              replacementAmount: f.replacementAmount.value === "" ? undefined : Number(f.replacementAmount.value),
-              replacementMethod: f.replacementMethod.value
-            }
-          });
-          close();
-          setMessage($("payPageMessage"), result.message, "success");
-          await Promise.all([loadItems(), loadReport()]);
-        } catch (error) {
-          setMessage(element.querySelector("#voidMessage"), error.message, "error");
-        }
+        await busy(submitEvent.submitter, async () => {
+          try {
+            const result = await api(`/api/payments/${payment.id}/void`, {
+              method: "POST",
+              body: {
+                reason: f.reason.value,
+                replacementAmount: f.replacementAmount.value === "" ? undefined : Number(f.replacementAmount.value),
+                replacementMethod: f.replacementMethod.value
+              }
+            });
+            close();
+            await Promise.all([loadItems(), loadReport()]);
+            toast(result.message);
+          } catch (error) {
+            setMessage(element.querySelector("#voidMessage"), error.message, "error");
+          }
+        });
       });
     });
 
@@ -538,17 +629,20 @@
       event.preventDefault();
       const form = event.target;
 
-      try {
-        const result = await api("/api/payments/product-sale", {
-          method: "POST",
-          body: { inventoryId: form.inventoryId.value, quantity: Number(form.quantity.value), method: form.method.value }
-        });
-        form.reset();
-        setMessage($("saleMessage"), `${result.message} ${money(result.payment.amount)} recorded. ${result.remainingStock} left.`, "success");
-        await Promise.all([loadItems(), loadReport()]);
-      } catch (error) {
-        setMessage($("saleMessage"), error.message, "error");
-      }
+      await busy(event.submitter, async () => {
+        try {
+          const result = await api("/api/payments/product-sale", {
+            method: "POST",
+            body: { inventoryId: form.inventoryId.value, quantity: Number(form.quantity.value), method: form.method.value }
+          });
+          form.reset();
+          setMessage($("saleMessage"), "");
+          await Promise.all([loadItems(), loadReport()]);
+          toast(`${result.message} ${money(result.payment.amount)} recorded. ${result.remainingStock} left.`);
+        } catch (error) {
+          setMessage($("saleMessage"), error.message, "error");
+        }
+      });
     });
 
     await Promise.all([loadItems(), loadReport()]);
@@ -563,17 +657,16 @@
     body.innerHTML = `
       <p class="muted narrow-text">Accounts are optional. Create one only when a customer asks for it (to keep their visit history). Walk-ins can always be served with just a name.</p>
 
-      <form class="card filter-bar" id="customerSearch">
+      <form class="card filter-bar" id="customerSearch" role="search">
         <input type="search" name="search" placeholder="Search by name, email or phone" aria-label="Search customers">
         <button class="primary-btn" type="submit">Search</button>
       </form>
-      <p class="message" id="customerMessage" role="status"></p>
 
       <article class="card">
         <div class="card-heading"><h2>Customer accounts</h2><span class="muted" id="customerCount"></span></div>
         <div class="table-wrap">
           <table class="data-table">
-            <thead><tr><th>Name</th><th>Email</th><th>Phone</th><th>Visits</th><th>Spent</th><th>Last visit</th><th></th></tr></thead>
+            <thead><tr><th>Name</th><th>Email</th><th>Phone</th><th>Visits</th><th>Spent</th><th>Last visit</th><th><span class="sr-only">Actions</span></th></tr></thead>
             <tbody id="customerRows"></tbody>
           </table>
         </div>
@@ -583,7 +676,7 @@
         <div class="card-heading"><h2>Walk-ins without an account</h2><span class="muted">Last 30 days</span></div>
         <div class="table-wrap">
           <table class="data-table">
-            <thead><tr><th>Date</th><th>#</th><th>Name</th><th>Service</th><th>Barber</th><th>Status</th><th>Paid</th><th></th></tr></thead>
+            <thead><tr><th>Date</th><th>#</th><th>Name</th><th>Service</th><th>Barber</th><th>Status</th><th>Paid</th><th><span class="sr-only">Actions</span></th></tr></thead>
             <tbody id="walkInRows"></tbody>
           </table>
         </div>
@@ -594,8 +687,9 @@
     let walkIns = [];
 
     async function loadCustomers() {
-      list = await api(`/api/customers?search=${encodeURIComponent($("customerSearch").search.value)}`);
-      $("customerCount").textContent = `${list.length} shown`;
+      const search = $("customerSearch").search.value.trim();
+      list = await api(`/api/customers?search=${encodeURIComponent(search)}`);
+      $("customerCount").textContent = search ? `${list.length} match(es) for “${search}”` : `${list.length} shown`;
       $("customerRows").innerHTML = list.length ? list.map(c => `
         <tr class="${c.active ? "" : "inactive"}">
           <td><strong>${escapeHTML(c.name)}</strong>${c.active ? "" : ' <span class="chip">Deactivated</span>'}</td>
@@ -609,7 +703,7 @@
             ${c.active ? `<button class="secondary-btn small" type="button" data-reset="${c.id}">Reset password</button>` : ""}
             ${isAdmin ? `<button class="${c.active ? "danger-btn" : "secondary-btn"} small" type="button" data-toggle="${c.id}">${c.active ? "Deactivate" : "Activate"}</button>` : ""}
           </td>
-        </tr>`).join("") : emptyRow(7, "No customer accounts found.");
+        </tr>`).join("") : emptyRow(7, search ? "No customer accounts match your search." : "No customer accounts yet. That's fine: walk-ins don't need one.");
     }
 
     async function loadWalkIns() {
@@ -635,7 +729,7 @@
           <p class="muted">Only if the customer wants one. They get a one-time password and can change it after signing in.${visit ? " This visit will be added to their history." : ""}</p>
           <label for="ncName">Name *</label><input id="ncName" name="name" maxlength="60" required value="${escapeHTML(visit?.customerName || "")}">
           <label for="ncEmail">Email *</label><input id="ncEmail" name="email" type="email" required>
-          <label for="ncPhone">Phone</label><input id="ncPhone" name="phone" maxlength="20">
+          <label for="ncPhone">Phone</label><input id="ncPhone" name="phone" type="tel" maxlength="20">
           <div class="form-actions">
             <button class="primary-btn" type="submit">Create account</button>
             <button class="secondary-btn" type="button" data-close>Cancel</button>
@@ -646,23 +740,25 @@
       element.querySelector("form").addEventListener("submit", async event => {
         event.preventDefault();
         const form = event.target;
-        try {
-          const result = await api("/api/customers", {
-            method: "POST",
-            body: { name: form.name.value, email: form.email.value, phone: form.phone.value, ticketId: visit?.id }
-          });
-          close();
-          App.showTemporaryPassword("Account created", result.name, result.temporaryPassword);
-          await Promise.all([loadCustomers(), loadWalkIns()]);
-        } catch (error) {
-          setMessage(element.querySelector("#ncMessage"), error.message, "error");
-        }
+        await busy(event.submitter, async () => {
+          try {
+            const result = await api("/api/customers", {
+              method: "POST",
+              body: { name: form.name.value, email: form.email.value, phone: form.phone.value, ticketId: visit?.id }
+            });
+            close();
+            App.showTemporaryPassword("Account created", result.name, result.temporaryPassword);
+            await Promise.all([loadCustomers(), loadWalkIns()]);
+          } catch (error) {
+            setMessage(element.querySelector("#ncMessage"), error.message, "error");
+          }
+        });
       });
     }
 
     $("customerSearch").addEventListener("submit", event => {
       event.preventDefault();
-      loadCustomers().catch(error => setMessage($("customerMessage"), error.message, "error"));
+      loadCustomers().catch(error => toast(error.message, "error"));
     });
 
     actions.querySelector("#newCustomer").addEventListener("click", () => accountDialog(null));
@@ -694,24 +790,25 @@
             </div>
             <div class="form-actions"><button class="secondary-btn" type="button" data-close>Close</button></div>`);
         } else if (button.dataset.reset) {
-          if (!confirm(`Reset the password for ${customer.name}? They will be signed out everywhere.`)) return;
+          if (!await confirmDialog(`Reset the password for ${customer.name}? They will be signed out everywhere and get a one-time password.`, { title: "Reset password", confirmText: "Reset password" })) return;
           const result = await api(`/api/customers/${id}/reset-password`, { method: "POST" });
           App.showTemporaryPassword("Password reset", customer.name, result.temporaryPassword);
         } else if (button.dataset.toggle) {
-          if (!confirm(`${customer.active ? "Deactivate" : "Activate"} ${customer.name}'s account?`)) return;
+          const turnOff = customer.active;
+          if (!await confirmDialog(`${turnOff ? "Deactivate" : "Activate"} ${customer.name}'s account?${turnOff ? " They won't be able to sign in." : ""}`, { title: turnOff ? "Deactivate account" : "Activate account", confirmText: turnOff ? "Deactivate" : "Activate", danger: turnOff })) return;
           const result = await api(`/api/customers/${id}`, { method: "PATCH", body: { active: !customer.active } });
-          setMessage($("customerMessage"), result.message, "success");
           await loadCustomers();
+          toast(result.message);
         }
       } catch (error) {
-        setMessage($("customerMessage"), error.message, "error");
+        toast(error.message, "error");
       }
     });
 
     await Promise.all([loadCustomers(), loadWalkIns()]);
   }
 
-  // ---------- My account: change password ----------
+  // ---------- My account: password, devices, deleting a customer account ----------
 
   async function account(body, actions, user) {
     const staff = user && user.role !== "customer";
@@ -727,7 +824,7 @@
         <input id="currentPassword" name="currentPassword" type="password" autocomplete="current-password" required>
 
         <label for="newPassword">New password</label>
-        <input id="newPassword" name="newPassword" type="password" autocomplete="new-password" required>
+        <input id="newPassword" name="newPassword" type="password" autocomplete="new-password" minlength="${staff ? 10 : 8}" required>
 
         <label for="confirmPassword">Confirm new password</label>
         <input id="confirmPassword" name="confirmPassword" type="password" autocomplete="new-password" required>
@@ -740,7 +837,6 @@
         <h2>Devices</h2>
         <p class="muted">Lost a phone, or signed in on a shared computer? Sign out everywhere else${staff ? " and forget the devices that skip the email code" : ""}. Changing your password does this too.</p>
         <button class="secondary-btn" type="button" id="logoutEverywhere">Sign out all other devices</button>
-        <p class="message" id="devicesMessage" role="status"></p>
       </section>
 
       ${staff ? "" : `
@@ -755,23 +851,24 @@
         <p class="message" id="deleteMessage" role="status"></p>
       </section>`}`;
 
-    body.querySelector("#logoutEverywhere").addEventListener("click", async () => {
+    body.querySelector("#logoutEverywhere").addEventListener("click", event => busy(event.target, async () => {
       try {
         const result = await api("/api/auth/logout-everywhere", { method: "POST" });
-        setMessage(body.querySelector("#devicesMessage"), result.message, "success");
+        toast(result.message);
       } catch (error) {
-        setMessage(body.querySelector("#devicesMessage"), error.message, "error");
+        toast(error.message, "error");
       }
-    });
+    }));
 
     body.querySelector("#deleteForm")?.addEventListener("submit", async event => {
       event.preventDefault();
-      if (!confirm("Delete your account? This can't be undone.")) return;
+      const password = event.target.password.value;
+      if (!await confirmDialog("Your account will be deleted. This can't be undone.", { title: "Delete my account", confirmText: "Delete my account", danger: true })) return;
 
       try {
-        await api("/api/auth/delete-account", { method: "POST", body: { password: event.target.password.value } });
-        alert("Your account has been deleted.");
-        window.location.href = "/login.html";
+        await api("/api/auth/delete-account", { method: "POST", body: { password } });
+        sessionStorage.removeItem("customerName");
+        window.location.href = "/login.html#deleted";
       } catch (error) {
         setMessage(body.querySelector("#deleteMessage"), error.message, "error");
       }
@@ -787,20 +884,23 @@
         return;
       }
 
-      try {
-        await api("/api/auth/change-password", {
-          method: "POST",
-          body: { currentPassword: form.currentPassword.value, newPassword: form.newPassword.value }
-        });
-        form.reset();
-        setMessage(message, "Password changed. Other devices have been signed out.", "success");
-        document.getElementById("passwordBanner")?.classList.add("hidden");
-        App.state.mustChangePassword = false;
-      } catch (error) {
-        setMessage(message, error.message, "error");
-      }
+      await busy(event.submitter, async () => {
+        try {
+          await api("/api/auth/change-password", {
+            method: "POST",
+            body: { currentPassword: form.currentPassword.value, newPassword: form.newPassword.value }
+          });
+          form.reset();
+          setMessage(message, "");
+          toast("Password changed. Other devices have been signed out.");
+          document.getElementById("passwordBanner")?.classList.add("hidden");
+          App.state.mustChangePassword = false;
+        } catch (error) {
+          setMessage(message, error.message, "error");
+        }
+      });
     });
   }
 
-  window.Desk = { queue, payments, customers, account, methodLabel, serviceOptions, emptyRow };
+  window.Desk = { queue, payments, customers, account, methodLabel, serviceOptions, emptyRow, statCards };
 })();

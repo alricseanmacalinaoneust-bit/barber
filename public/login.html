@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Login | Renz Barbershop</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/css/login.css">
 </head>
 
@@ -11,7 +12,7 @@
   <main class="login-layout">
     <section class="login-brand">
       <div class="brand-icon">✂</div>
-      <h1>RENZ<br>BARBERSHOP</h1>
+      <h1>RENZ <br>BARBERSHOP</h1>
       <p>Your style. Your turn. Your time.</p>
       <p>Join the queue in a few steps, or sign in to run the shop.</p>
     </section>
@@ -19,6 +20,8 @@
     <section class="login-content">
       <h2 id="formTitle">Welcome!</h2>
       <p class="login-subtitle" id="formSubtitle">Join the queue or sign in to your account.</p>
+
+      <div class="device-notice hidden" id="deviceNotice" role="status"></div>
 
       <div class="login-tabs">
         <button class="login-tab active" id="customerTab" type="button">Customer</button>
@@ -77,6 +80,7 @@
     </section>
   </main>
 
+  <script src="/js/common.js" defer></script>
   <script src="/js/login.js" defer></script>
 </body>
 </html>

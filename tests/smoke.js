@@ -456,6 +456,17 @@ async function run() {
   r = await carla("GET", "/api/audit");
   check("Customers can't read the activity log", r.status === 403, r.status);
 
+  section("Changing the service at payment");
+  const haircutBeard = services.find(s => s.name === "Haircut + Beard");
+  r = await admin("POST", "/api/queue/call-next", { barberId: barberA.id });
+  const switchTicket = r.json;
+  check("Barber A calls the next customer (joined for Beard Trim)", r.status === 200 && switchTicket.service === "Beard Trim", r.json);
+  r = await admin("POST", `/api/queue/${switchTicket.id}/complete`, { method: "cash", serviceId: "nope" });
+  check("An invalid service is rejected", r.status === 400, r.json);
+  r = await admin("POST", `/api/queue/${switchTicket.id}/complete`, { method: "cash", serviceId: haircutBeard.id });
+  check("Completing as Haircut + Beard charges that price and records that service",
+    r.status === 200 && r.json.ticket.service === "Haircut + Beard" && r.json.ticket.amountPaid === haircutBeard.price, r.json);
+
   r = await admin("POST", "/api/auth/logout");
   r = await admin("GET", "/api/auth/me");
   check("Admin logged out", r.status === 401, r.status);

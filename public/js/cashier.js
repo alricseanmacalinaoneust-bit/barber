@@ -8,7 +8,7 @@
       title: "Front Desk",
       eyebrow: "TODAY'S QUEUE",
       description: "Add walk-ins, call customers to free barbers, and take payment when they're done.",
-      render: Desk.queue
+      render: (body, actions) => Desk.queue(body, actions, user)
     },
     payments: {
       title: "Payments",
@@ -19,13 +19,13 @@
     customers: {
       title: "Customers",
       eyebrow: "CUSTOMER RECORDS",
-      description: "Customer accounts and walk-in visits.",
+      description: "Optional customer accounts and walk-in visits.",
       render: (body, actions) => Desk.customers(body, actions, user)
     },
     account: {
       title: "My Account",
       eyebrow: "SECURITY",
-      description: "Change your password.",
+      description: "Change your password and manage signed-in devices.",
       render: (body, actions) => Desk.account(body, actions, user)
     }
   }, "desk");

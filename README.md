@@ -50,7 +50,7 @@ Make a backup at least daily once the shop uses the system, and keep a copy off 
 
 ## Tests
 
-`npm test` starts the server on a separate throwaway database (`barbershop_test`), checks every role, flow and security rule (143 checks), then deletes that database. Your real data is never touched. MongoDB must be running.
+`npm test` starts the server on a separate throwaway database (`barbershop_test`), checks every role, flow and security rule (146 checks), then deletes that database. Your real data is never touched. MongoDB must be running.
 
 ## Project structure
 

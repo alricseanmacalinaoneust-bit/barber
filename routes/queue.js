@@ -396,7 +396,20 @@ router.post("/:id/complete", ...staffOnly, async (req, res) => {
   const current = await db.collection("queueTickets").findOne({ _id: id });
   if (!current) return res.status(404).json({ error: "Ticket not found." });
 
-  const listPrice = Number(current.price) || 0;
+  // The customer may have had a different service than they joined for.
+  let listPrice = Number(current.price) || 0;
+  let serviceUpdate = {};
+  if (req.body.serviceId) {
+    const serviceId = toObjectId(req.body.serviceId);
+    const service = serviceId && await db.collection("services").findOne({ _id: serviceId, active: { $ne: false } });
+    if (!service) return res.status(400).json({ error: "Choose a valid service." });
+
+    listPrice = service.price;
+    if (!(current.serviceId && service._id.equals(current.serviceId))) {
+      serviceUpdate = { serviceId: service._id, service: service.name, price: service.price, durationMinutes: service.durationMinutes };
+    }
+  }
+
   const rawAmount = req.body.amount;
   const amount = rawAmount === undefined || rawAmount === "" || rawAmount === null ? listPrice : Number(rawAmount);
   if (!Number.isFinite(amount) || amount < 0 || amount > 100000) return res.status(400).json({ error: "Enter a valid amount." });
@@ -410,7 +423,7 @@ router.post("/:id/complete", ...staffOnly, async (req, res) => {
 
   const ticket = await db.collection("queueTickets").findOneAndUpdate(
     { _id: id, status: "serving" },
-    { $set: { status: "completed", completedAt: new Date(), completedBy: req.user._id } },
+    { $set: { status: "completed", completedAt: new Date(), completedBy: req.user._id, ...serviceUpdate } },
     { returnDocument: "after" }
   );
 

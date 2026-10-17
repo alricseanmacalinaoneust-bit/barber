@@ -32,6 +32,22 @@
     }
   }
 
+  // For a TV: click once to go full screen; the mouse pointer hides when it isn't moving.
+  const hint = document.createElement("button");
+  hint.className = "fullscreen-hint";
+  hint.type = "button";
+  hint.textContent = "Click for full screen";
+  document.body.appendChild(hint);
+  hint.addEventListener("click", () => document.documentElement.requestFullscreen?.().catch(() => {}));
+  document.addEventListener("fullscreenchange", () => hint.classList.toggle("hidden", Boolean(document.fullscreenElement)));
+
+  let idleTimer;
+  document.addEventListener("mousemove", () => {
+    document.body.classList.remove("idle");
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => document.body.classList.add("idle"), 3000);
+  });
+
   tick();
   refresh();
   setInterval(tick, 10000);

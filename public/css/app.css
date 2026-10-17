@@ -1,6 +1,7 @@
 :root {
   --dark: #242522;
   --gold: #b99a67;
+  --gold-text: #7a5d35;
   --cream: #f6f3ed;
   --white: #fff;
   --muted: #657079;
@@ -18,6 +19,25 @@ body {
 
 button, input, select, textarea { font: inherit; }
 button { cursor: pointer; }
+button:disabled { cursor: not-allowed; }
+
+/* A clear outline for keyboard users. */
+:focus-visible { outline: 3px solid #c9a46a; outline-offset: 2px; }
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+body.dialog-open { overflow: hidden; }
+
+.is-busy { cursor: progress !important; opacity: .7; }
+
+.loading { padding: 30px; color: var(--muted); text-align: center; }
 
 .sidebar {
   position: fixed;
@@ -138,7 +158,7 @@ button { cursor: pointer; }
 }
 
 .eyebrow {
-  color: #987747;
+  color: var(--gold-text);
   font-weight: bold;
   font-size: 12px;
   letter-spacing: 1.5px;
@@ -257,6 +277,16 @@ button { cursor: pointer; }
 
 .danger-btn:hover { background: #fbe5e5; }
 
+.danger-btn.solid { background: #a52828; border-color: #a52828; color: white; font-weight: bold; }
+.danger-btn.solid:hover { background: #8a1f1f; }
+
+.secondary-btn:disabled, .danger-btn:disabled { opacity: .6; }
+
+/* Buttons on the dark join/queue panel. */
+.secondary-btn.on-dark { background: transparent; border-color: #8c8576; color: white; }
+.secondary-btn.on-dark:hover { border-color: var(--gold); }
+.text-btn.on-dark { color: #e5c994; }
+
 a.primary-btn, a.secondary-btn {
   display: inline-block;
   color: #20211f;
@@ -357,7 +387,7 @@ a.primary-btn, a.secondary-btn {
 .barber-info h2 { margin: 0 0 8px; font-size: 21px; }
 
 .barber-specialty {
-  color: #987747;
+  color: var(--gold-text);
   font-weight: bold;
   font-size: 13px;
 }
@@ -518,7 +548,7 @@ footer {
   border: 0;
   background: none;
   padding: 0;
-  color: #987747;
+  color: var(--gold-text);
   font-size: 13px;
   font-weight: bold;
 }
@@ -667,7 +697,7 @@ footer {
 .narrow-text { max-width: 760px; margin: 0 0 16px; }
 
 .account-link { margin-top: 14px; }
-.account-link summary { cursor: pointer; color: #987747; font-size: 14px; font-weight: bold; }
+.account-link summary { cursor: pointer; color: var(--gold-text); font-size: 14px; font-weight: bold; }
 
 .inline-form { display: grid; gap: 8px; max-width: 360px; }
 .inline-form label { font-weight: bold; font-size: 14px; margin-top: 8px; }
@@ -848,36 +878,165 @@ footer {
 .display-empty { color: #b9b4a8; font-size: 24px; }
 .display-info { color: #d8c5a3; font-size: 20px; margin-top: 18px; }
 .display-page footer { background: #1b1c1a; }
+.display-page.idle { cursor: none; }
+
+.fullscreen-hint {
+  position: fixed;
+  right: 20px;
+  bottom: 70px;
+  padding: 10px 16px;
+  border: 1px solid #484943;
+  border-radius: 8px;
+  background: #33342f;
+  color: #d8c5a3;
+}
+
+.display-page.idle .fullscreen-hint { opacity: 0; }
+
+/* Corner notices */
+.toasts {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 100;
+  display: grid;
+  gap: 10px;
+  max-width: min(420px, calc(100vw - 40px));
+  /* Notices never block taps on the buttons underneath. */
+  pointer-events: none;
+}
+
+.toast {
+  padding: 14px 18px;
+  border-radius: 10px;
+  background: var(--dark);
+  color: white;
+  box-shadow: 0 8px 24px #0000002e;
+  font-size: 14px;
+  line-height: 1.5;
+  border-left: 5px solid #3fae74;
+  animation: toast-in .2s ease-out;
+}
+
+.toast.error { border-left-color: #e05252; }
+.toast.info { border-left-color: var(--gold); }
+.toast.leaving { opacity: 0; transform: translateY(8px); transition: opacity .3s, transform .3s; }
+
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* Password fields with a Show button */
+.password-field { position: relative; }
+.password-field input { padding-right: 64px !important; }
+
+.password-toggle {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  transform: translateY(-50%);
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: #f1ece2;
+  color: var(--gold-text);
+  font-size: 12px;
+  font-weight: bold;
+}
+
+/* Front desk extras */
+.updated { margin: 10px 0 0; text-align: right; }
+.data-table tr.long-wait td { background: #fff6e5; }
+.change-text { font-size: 18px; font-weight: bold; margin: 8px 0 0; }
+.details-cell { min-width: 220px; overflow-wrap: anywhere; }
+.narrow-only { display: none; }
+
+.quick-ranges { display: flex; flex-wrap: wrap; gap: 6px; }
+
+.banner-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.banner-actions .primary-btn { margin-top: 0; }
+
+/* Menu button (phones only) */
+.menu-toggle { display: none; }
 
 @media (max-width: 1100px) {
   .barber-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .stats.stats-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .stats.stats-5 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .stats.compact-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .admin-grid.two, .admin-grid.three, .desk-grid, .display-main { grid-template-columns: 1fr; }
+
+  /* The walk-in form opens from the "+ Add walk-in" button on smaller screens. */
+  .narrow-only { display: inline-block; }
   .desk-grid > .form-card { order: -1; margin-bottom: 0; }
+  .desk-grid > .form-card.collapsed { display: none; }
+
+  .data-table td.row-actions { white-space: normal; min-width: 150px; }
+  .data-table td.row-actions > * { margin: 3px 6px 3px 0 !important; }
 }
 
 @media (max-width: 700px) {
+  /* The sidebar becomes a top bar; the menu opens from the Menu button. */
   .sidebar {
-    position: relative;
+    position: sticky;
+    top: 0;
     width: 100%;
-    padding: 15px;
+    padding: 10px 14px;
+    overflow: visible;
   }
 
-  .menu-title, .sidebar-bottom { display: none; }
+  .brand { padding: 4px; }
+  .brand-icon { font-size: 28px; }
 
-  .nav {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    margin-top: 12px;
+  .menu-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-left: auto;
+    padding: 9px 14px;
+    border: 1px solid #5a5a52;
+    border-radius: 8px;
+    background: transparent;
+    color: white;
   }
+
+  .menu-title, .sidebar-bottom, .sidebar .nav { display: none; }
+  .sidebar.menu-open .nav { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 10px; }
 
   .page { margin-left: 0; }
-  .stats, .stats.stats-4, .stats.stats-5, .barber-grid, .form-grid { grid-template-columns: 1fr; }
+  .topbar { padding: 14px 4%; }
+  .topbar h2 { font-size: 17px; }
+  .greeting { font-size: 12px; text-align: right; }
+
+  .stats, .barber-grid, .form-grid { grid-template-columns: 1fr; }
+  .stats.stats-4, .stats.stats-5 { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .stats.compact-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+  .stats.stats-4 .card, .stats.stats-5 .card, .stats.compact-stats .card { padding: 14px; }
+  .stats.compact-stats .stat-help { display: none; }
+  .stats.compact-stats .stat-value { font-size: 18px; margin: 10px 0 0; }
+  .stats.stats-4 .stat-value, .stats.stats-5 .stat-value { font-size: 20px; margin: 10px 0; }
+
   .section-heading { align-items: flex-start; }
+  .heading-actions { width: 100%; }
   .barber-row { flex-direction: column; align-items: flex-start; }
   .row-actions { justify-content: flex-start; }
-  .container { padding: 24px 4%; }
-  .barber-photo { height: 260px; }
+  .container { padding: 20px 4%; }
+  .barber-photo { height: 200px; }
   .join-banner { padding: 22px; }
+
+  /* Fewer hour labels so they don't overlap. */
+  .bar-chart .bar-col:nth-child(even) .bar-label { visibility: hidden; }
+  .bar-chart .bar-value { font-size: 10px; }
+
+  .toasts { left: 16px; right: 16px; bottom: 16px; max-width: none; }
+  .filter-bar > * { flex: 1 1 auto; }
 }

@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Customer Dashboard | Renz Barbershop</title>
 
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/css/app.css">
 </head>
 
@@ -59,11 +60,11 @@
           <p>Join the queue, check your status, and meet our barbers.</p>
         </div>
 
-        <section class="stats">
+        <section class="stats compact-stats">
           <article class="card">
             <div class="stat-label">Your Queue Number</div>
             <div class="stat-value" id="queueNumber">—</div>
-            <div class="stat-help">Your number appears after joining the queue.</div>
+            <div class="stat-help" id="numberHelp">You'll get a number when you join.</div>
           </article>
           <article class="card">
             <div class="stat-label">Estimated Waiting Time</div>
@@ -73,11 +74,11 @@
           <article class="card">
             <div class="stat-label">Queue Status</div>
             <div class="stat-value" id="queueStatus">Not queued</div>
-            <div class="stat-help">This page updates by itself.</div>
+            <div class="stat-help" id="statusHelp">This page updates by itself.</div>
           </article>
         </section>
 
-        <section class="join-banner">
+        <form class="join-banner" id="joinPanel">
           <div class="eyebrow">READY FOR A FRESH CUT?</div>
           <h2>Join the queue</h2>
           <p>Choose your service. You can also pick a barber, or take the first one free.</p>
@@ -92,14 +93,25 @@
             <select id="preferredBarber"><option value="">Any barber (fastest)</option></select>
           </div>
 
-          <button class="primary-btn" id="joinQueueBtn" type="button">✂ Join Queue</button>
+          <button class="primary-btn" id="joinQueueBtn" type="submit">✂ Join Queue</button>
           <div id="queueMessage" class="message" role="status" aria-live="polite"></div>
+        </form>
+
+        <section class="join-banner hidden" id="inQueuePanel" aria-live="polite">
+          <div class="eyebrow" id="inQueueEyebrow">YOU'RE IN THE QUEUE</div>
+          <h2 id="inQueueTitle">You're #—</h2>
+          <p id="inQueueText"></p>
+          <div class="banner-actions">
+            <button class="primary-btn" id="viewQueueBtn" type="button">View my queue</button>
+            <button class="secondary-btn on-dark hidden" id="notifyBtn" type="button">Notify me when it's my turn</button>
+            <button class="text-btn on-dark" id="leaveQueueBtn2" type="button">Leave the queue</button>
+          </div>
         </section>
 
         <section class="card side-card">
           <h2>How It Works</h2>
           <ol>
-            <li><strong>Choose a service and join the queue</strong><span>Pick a barber if you have a favourite, or any barber for the shortest wait.</span></li>
+            <li><strong>Choose a service and join the queue</strong><span>Pick a barber if you have a favorite, or any barber for the shortest wait.</span></li>
             <li><strong>Wait for your turn</strong><span>This page updates by itself and alerts you when it's your turn.</span></li>
             <li><strong>Get your haircut, then rate your barber</strong><span>Pay at the counter, then rate the barber who served you.</span></li>
           </ol>
@@ -120,7 +132,7 @@
           <button class="secondary-btn" id="refreshQueueBtn" type="button">Refresh</button>
         </div>
 
-        <section class="stats">
+        <section class="stats compact-stats">
           <article class="card"><div class="stat-label">Queue Number</div><div class="stat-value" id="queueNumber2">—</div></article>
           <article class="card"><div class="stat-label">Estimated Wait</div><div class="stat-value" id="waitTime2">—</div></article>
           <article class="card"><div class="stat-label">Status</div><div class="stat-value" id="queueStatus2">Not queued</div></article>
@@ -130,7 +142,6 @@
           <h2>Visit details</h2>
           <p class="muted" id="visitDetails">You haven't joined today's queue yet.</p>
           <button class="danger-btn hidden" id="leaveQueueBtn" type="button">Leave the queue</button>
-          <div id="leaveMessage" class="message" role="status"></div>
         </section>
       </section>
 

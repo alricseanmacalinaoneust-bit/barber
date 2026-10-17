@@ -2,8 +2,8 @@
 (function () {
   const HOME_PAGES = { admin: "/admin.html", cashier: "/cashier.html", customer: "/dashboard.html" };
 
-  // Shared page state: whether the signed-in staff member still has a one-time password.
-  const state = { mustChangePassword: false };
+  // Shared page state: whether someone is signed in, and whether staff still have a one-time password.
+  const state = { signedIn: false, mustChangePassword: false };
 
   const STATUS_LABELS = {
     waiting: "Waiting",
@@ -42,28 +42,50 @@
     return Math.max(0, Math.round((Date.now() - new Date(value)) / 60000));
   }
 
+  // "just now", "12 min", "1 h 5 min"
+  function waitedText(value) {
+    const minutes = minutesSince(value);
+    if (minutes < 1) return "just now";
+    if (minutes < 60) return `${minutes} min`;
+    return `${Math.floor(minutes / 60)} h ${minutes % 60} min`;
+  }
+
+  function dateKey(date) {
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+  }
+
   function today() {
-    const now = new Date();
-    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+    return dateKey(new Date());
   }
 
   // fetch() wrapper: sends/receives JSON and throws an Error with the server's message.
+  // If a signed-in session has ended, goes back to the login page.
   async function api(url, { method = "GET", body } = {}) {
     const headers = { Accept: "application/json" };
     if (body !== undefined) headers["Content-Type"] = "application/json";
 
-    const response = await fetch(url, {
-      method,
-      headers,
-      credentials: "same-origin",
-      body: body === undefined ? undefined : JSON.stringify(body)
-    });
+    let response;
+    try {
+      response = await fetch(url, {
+        method,
+        headers,
+        credentials: "same-origin",
+        body: body === undefined ? undefined : JSON.stringify(body)
+      });
+    } catch {
+      throw new Error("Can't reach the server. Check that it is running and try again.");
+    }
 
     const data = await response.json().catch(() => ({}));
 
     if (!response.ok) {
+      if (response.status === 401 && state.signedIn && !url.startsWith("/api/auth/")) {
+        window.location.href = "/login.html#expired";
+      }
+
       const error = new Error(data.error || `Request failed (${response.status}).`);
       error.status = response.status;
+      error.code = data.code;
       throw error;
     }
 
@@ -74,6 +96,44 @@
     if (!element) return;
     element.textContent = text;
     element.className = "message" + (type ? " " + type : "");
+  }
+
+  // A short notice in the corner, so feedback is visible wherever the user is on the page.
+  function toast(message, type = "success") {
+    let box = document.getElementById("toasts");
+    if (!box) {
+      box = document.createElement("div");
+      box.id = "toasts";
+      box.className = "toasts";
+      box.setAttribute("role", "status");
+      box.setAttribute("aria-live", "polite");
+      document.body.appendChild(box);
+    }
+
+    const item = document.createElement("div");
+    item.className = `toast ${type}`;
+    item.textContent = message;
+    box.appendChild(item);
+
+    setTimeout(() => {
+      item.classList.add("leaving");
+      setTimeout(() => item.remove(), 300);
+    }, type === "error" ? 6000 : 3500);
+  }
+
+  // Disables the button while the action runs, so it can't be pressed twice.
+  async function busy(button, action) {
+    if (!button) return action();
+    if (button.disabled) return undefined;
+
+    button.disabled = true;
+    button.classList.add("is-busy");
+    try {
+      return await action();
+    } finally {
+      button.disabled = false;
+      button.classList.remove("is-busy");
+    }
   }
 
   function statusPill(status) {
@@ -103,14 +163,14 @@
     const years = Number(barber.experienceYears) || 0;
     const removed = barber.active === false;
     const statusClass = removed ? "unavailable" : barber.status;
-    const statusText = removed ? "Removed" : { available: "Available", busy: "Busy", unavailable: "Unavailable" }[barber.status] || "Unavailable";
+    const statusText = removed ? "Removed" : { available: "Available now", busy: "Busy", unavailable: "Off duty" }[barber.status] || "Off duty";
 
     return `
       <article class="barber-card${removed ? " removed" : ""}">
         <div class="barber-photo">
           ${photo
             ? `<img src="${escapeHTML(photo)}" alt="${name}" loading="lazy" data-initial="${initial}">`
-            : `<div class="barber-avatar">${initial}</div>`}
+            : `<div class="barber-avatar" aria-hidden="true">${initial}</div>`}
         </div>
         <div class="barber-info">
           <h2>${name}</h2>
@@ -118,8 +178,8 @@
           <p class="barber-bio">${escapeHTML(barber.bio || "Welcome to our barbershop!")}</p>
           <p class="barber-experience">${years ? `${years} year${years === 1 ? "" : "s"} of experience` : "Experience not specified"}</p>
           <span class="barber-status ${escapeHTML(statusClass)}">${statusText}</span>
-          <div class="barber-rating">
-            <div class="stars">${stars}</div>
+          <div class="barber-rating" aria-label="Rated ${rating.toFixed(1)} out of 5">
+            <div class="stars" aria-hidden="true">${stars}</div>
             <div class="rating-text">${rating.toFixed(1)} / 5 · ${barber.reviewCount || 0} review(s)</div>
           </div>
           ${actionsHTML ? `<div class="barber-actions">${actionsHTML}</div>` : ""}
@@ -139,38 +199,104 @@
   }, true);
 
   // A pop-up dialog. Elements with data-close (or clicking outside, or Escape) close it.
-  function openDialog(innerHTML) {
+  // Keyboard focus stays inside while it's open and returns to where it was afterwards.
+  function openDialog(innerHTML, { onClose } = {}) {
+    const opener = document.activeElement;
     const backdrop = document.createElement("div");
     backdrop.className = "dialog-backdrop";
     backdrop.innerHTML = `<div class="card dialog" role="dialog" aria-modal="true">${innerHTML}</div>`;
     document.body.appendChild(backdrop);
+    document.body.classList.add("dialog-open");
+
+    const dialog = backdrop.querySelector(".dialog");
+    const heading = dialog.querySelector("h2");
+    if (heading) {
+      heading.id = heading.id || "dialog-title-" + Date.now();
+      dialog.setAttribute("aria-labelledby", heading.id);
+    }
+
+    function focusable() {
+      return [...dialog.querySelectorAll("button, input, select, textarea, a[href]")].filter(el => !el.disabled && el.offsetParent !== null);
+    }
 
     function onKey(event) {
       if (event.key === "Escape") close();
+      if (event.key !== "Tab") return;
+
+      const items = focusable();
+      if (!items.length) return;
+      const first = items[0];
+      const last = items[items.length - 1];
+
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
     }
 
+    let closed = false;
     function close() {
+      if (closed) return;
+      closed = true;
       backdrop.remove();
       document.removeEventListener("keydown", onKey);
+      if (!document.querySelector(".dialog-backdrop")) document.body.classList.remove("dialog-open");
+      if (opener && document.contains(opener)) opener.focus();
+      if (onClose) onClose();
     }
 
     backdrop.addEventListener("click", event => {
       if (event.target === backdrop || event.target.closest("[data-close]")) close();
     });
     document.addEventListener("keydown", onKey);
-    backdrop.querySelector("input, select, textarea")?.focus();
+    (dialog.querySelector("input:not([type=radio]), select, textarea") || focusable()[0])?.focus();
 
-    return { element: backdrop.querySelector(".dialog"), close };
+    return { element: dialog, close };
+  }
+
+  // A styled yes/no question. Resolves to true when confirmed.
+  function confirmDialog(message, { title = "Are you sure?", confirmText = "Yes", danger = false } = {}) {
+    return new Promise(resolve => {
+      let answered = false;
+      const { element, close } = openDialog(`
+        <h2>${escapeHTML(title)}</h2>
+        <p class="muted">${escapeHTML(message)}</p>
+        <div class="form-actions">
+          <button class="${danger ? "danger-btn solid" : "primary-btn"}" type="button" data-confirm>${escapeHTML(confirmText)}</button>
+          <button class="secondary-btn" type="button" data-close>Cancel</button>
+        </div>`, { onClose: () => { if (!answered) resolve(false); } });
+
+      const yes = element.querySelector("[data-confirm]");
+      yes.focus();
+      yes.addEventListener("click", () => {
+        answered = true;
+        close();
+        resolve(true);
+      });
+    });
   }
 
   // Shows a one-time password that staff must hand to the account owner.
   function showTemporaryPassword(title, who, password) {
     openDialog(`
       <h2>${escapeHTML(title)}</h2>
-      <p class="muted">Give this one-time password to ${escapeHTML(who)}. It is shown only once; they should change it after signing in.</p>
+      <p class="muted">Give this one-time password to ${escapeHTML(who)}. It is shown only once; they will be asked to change it after signing in.</p>
       <p class="temp-password">${escapeHTML(password)}</p>
-      <div class="form-actions"><button class="primary-btn" type="button" data-close>Done</button></div>
-    `);
+      <div class="form-actions">
+        <button class="secondary-btn" type="button" data-copy>Copy</button>
+        <button class="primary-btn" type="button" data-close>Done</button>
+      </div>
+    `).element.querySelector("[data-copy]").addEventListener("click", async event => {
+      try {
+        await navigator.clipboard.writeText(password);
+        event.target.textContent = "Copied";
+      } catch {
+        event.target.textContent = "Select and copy the password";
+      }
+    });
   }
 
   function downloadCSV(filename, rows) {
@@ -199,6 +325,63 @@
     window.location.href = "/login.html";
   }
 
+  // "Show" buttons on password fields, added automatically wherever a password field appears.
+  function enhancePasswords(root) {
+    root.querySelectorAll?.("input[type=password]:not([data-has-toggle])").forEach(input => {
+      input.dataset.hasToggle = "true";
+      const wrapper = document.createElement("div");
+      wrapper.className = "password-field";
+      input.parentNode.insertBefore(wrapper, input);
+      wrapper.appendChild(input);
+
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "password-toggle";
+      button.textContent = "Show";
+      button.setAttribute("aria-label", "Show password");
+      button.addEventListener("click", () => {
+        const showing = input.type === "text";
+        input.type = showing ? "password" : "text";
+        button.textContent = showing ? "Show" : "Hide";
+        button.setAttribute("aria-label", showing ? "Show password" : "Hide password");
+      });
+      wrapper.appendChild(button);
+    });
+  }
+
+  enhancePasswords(document);
+  new MutationObserver(records => {
+    records.forEach(record => record.addedNodes.forEach(node => {
+      if (node.nodeType === 1) enhancePasswords(node);
+    }));
+  }).observe(document.body, { childList: true, subtree: true });
+
+  // On phones the sidebar becomes a top bar with a Menu button.
+  function setupMobileMenu() {
+    const sidebar = document.querySelector(".sidebar");
+    const brand = sidebar?.querySelector(".brand");
+    if (!brand || brand.querySelector(".menu-toggle")) return;
+
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "menu-toggle";
+    button.setAttribute("aria-expanded", "false");
+    button.innerHTML = '<span aria-hidden="true">☰</span> Menu';
+    brand.appendChild(button);
+
+    const setOpen = open => {
+      sidebar.classList.toggle("menu-open", open);
+      button.setAttribute("aria-expanded", String(open));
+    };
+
+    button.addEventListener("click", () => setOpen(!sidebar.classList.contains("menu-open")));
+    sidebar.addEventListener("click", event => {
+      if (event.target.closest(".nav-link")) setOpen(false);
+    });
+  }
+
+  setupMobileMenu();
+
   // For staff pages: returns the signed-in user, or redirects anyone who shouldn't be here.
   async function requireStaff(roles) {
     try {
@@ -209,9 +392,10 @@
         return null;
       }
 
+      state.signedIn = true;
+      state.mustChangePassword = user.mustChangePassword;
       document.getElementById("userGreeting").textContent = `Hi, ${user.name}`;
       document.getElementById("passwordBanner")?.classList.toggle("hidden", !user.mustChangePassword);
-      state.mustChangePassword = user.mustChangePassword;
       return user;
     } catch (error) {
       if (error.status === 401) window.location.replace("/login.html");
@@ -227,6 +411,7 @@
     const content = document.getElementById("pageContent");
     const title = document.getElementById("pageTitle");
     let cleanup = null;
+    let firstOpen = true;
 
     async function open(requested) {
       // Staff with a one-time password must change it before using other pages.
@@ -238,11 +423,20 @@
       cleanup = null;
 
       sidebar.querySelectorAll("[data-page]").forEach(button => {
-        button.classList.toggle("active", button.dataset.page === key);
+        const active = button.dataset.page === key;
+        button.classList.toggle("active", active);
+        if (active) button.setAttribute("aria-current", "page");
+        else button.removeAttribute("aria-current");
       });
 
       title.textContent = page.title;
-      history.replaceState(null, "", "#" + key);
+      document.title = `${page.title} | Renz Barbershop`;
+      if (window.location.hash !== "#" + key) {
+        // The first page replaces the history entry; later pages add one, so Back works.
+        if (firstOpen) history.replaceState(null, "", "#" + key);
+        else history.pushState(null, "", "#" + key);
+      }
+      firstOpen = false;
       window.scrollTo(0, 0);
 
       content.innerHTML = `
@@ -254,7 +448,7 @@
           </div>
           <div class="heading-actions"></div>
         </div>
-        <div class="page-body"></div>`;
+        <div class="page-body"><div class="loading">Loading…</div></div>`;
 
       try {
         cleanup = await page.render(content.querySelector(".page-body"), content.querySelector(".heading-actions"));
@@ -273,6 +467,9 @@
       if (event.target.closest("[data-open-account]")) open("account");
     });
 
+    // Back/forward buttons and links like #payments switch pages too.
+    window.addEventListener("hashchange", () => open(window.location.hash.slice(1) || initial));
+
     open(window.location.hash.slice(1) || initial);
     return { open };
   }
@@ -284,13 +481,18 @@
     time,
     dateTime,
     minutesSince,
+    waitedText,
+    dateKey,
     today,
     api,
     setMessage,
+    toast,
+    busy,
     statusPill,
     safePhoto,
     barberCard,
     openDialog,
+    confirmDialog,
     showTemporaryPassword,
     downloadCSV,
     logout,
