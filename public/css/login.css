@@ -87,6 +87,40 @@ body.login-page {
   box-shadow: 0 2px 8px #00000012;
 }
 
+.login-subtabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: -8px 0 6px;
+}
+
+.login-subtab {
+  padding: 7px 12px;
+  border: 1px solid #e2e0da;
+  border-radius: 20px;
+  background: white;
+  color: #666;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.login-subtab.active {
+  border-color: #8a7652;
+  background: #f6f1e7;
+  color: #222;
+  font-weight: bold;
+}
+
+.link-btn {
+  border: 0;
+  background: none;
+  padding: 0;
+  color: #8a7652;
+  font-weight: bold;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
 .login-form label {
   display: block;
   font-size: 14px;

@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -6,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Customer Dashboard | Renz Barbershop</title>
 
-  <link rel="stylesheet" href="/css/dashboard.css">
+  <link rel="stylesheet" href="/css/app.css">
 </head>
 
 <body>
@@ -26,6 +25,7 @@
       <button class="nav-link" data-page="queue" type="button"><span>▤</span> My Queue</button>
       <button class="nav-link" data-page="barbers" type="button"><span>✂</span> Barbers</button>
       <button class="nav-link" data-page="rating" type="button"><span>★</span> Rate a Barber</button>
+      <button class="nav-link" data-page="visits" type="button"><span>☰</span> My Visits</button>
       <button class="nav-link" id="sidebarLogout" type="button"><span>↪</span> Log Out</button>
     </nav>
 
@@ -37,19 +37,24 @@
   <div class="page">
     <header class="topbar">
       <h2 id="pageTitle">Customer Dashboard</h2>
-      <span class="greeting" id="customerGreeting">Hi, Customer</span>
+      <span class="greeting" id="customerGreeting">Hi</span>
     </header>
+
+    <div class="turn-alert hidden" id="turnAlert" role="alert">
+      <span>✂ It's your turn! Please proceed to <strong id="turnBarber">your barber</strong>.</span>
+      <button class="secondary-btn small" id="dismissAlert" type="button">OK</button>
+    </div>
 
     <main class="container">
       <section class="page-section" id="dashboardPage">
         <div class="intro">
           <div class="eyebrow">RENZ BARBERSHOP</div>
-          <h1 id="welcomeTitle">Welcome, Customer!</h1>
+          <h1 id="welcomeTitle">Welcome!</h1>
           <p>Your style. Your turn. Your time.</p>
-          <p>Check your queue status, meet our barbers, and get ready for your next haircut.</p>
+          <p>Join the queue, check your status, and meet our barbers.</p>
         </div>
 
-        <section class="stats" id="dashboardQueueStats">
+        <section class="stats">
           <article class="card">
             <div class="stat-label">Your Queue Number</div>
             <div class="stat-value" id="queueNumber">—</div>
@@ -58,33 +63,28 @@
           <article class="card">
             <div class="stat-label">Estimated Waiting Time</div>
             <div class="stat-value" id="waitTime">—</div>
-            <div class="stat-help">Your estimated waiting time.</div>
+            <div class="stat-help" id="aheadText">Based on the customers ahead of you.</div>
           </article>
           <article class="card">
             <div class="stat-label">Queue Status</div>
             <div class="stat-value" id="queueStatus">Not queued</div>
-            <div class="stat-help">Your current queue progress.</div>
+            <div class="stat-help">This page updates by itself.</div>
           </article>
         </section>
 
         <section class="join-banner">
           <div class="eyebrow">READY FOR A FRESH CUT?</div>
           <h2>Join the queue</h2>
-          <p>Choose your service before joining the waiting list.</p>
+          <p>Choose your service. You can also pick a barber, or take the first one free.</p>
 
           <div class="service-selection">
             <label for="service">Choose Your Service</label>
-            <select id="service" name="service" required>
-              <option value="">-- Select a service --</option>
-              <option value="Haircut">Haircut</option>
-              <option value="Haircut + Beard">Haircut + Beard</option>
-              <option value="Beard Trim">Beard Trim</option>
-              <option value="Modern Mullet">Modern Mullet</option>
-              <option value="Buzz Cut">Buzz Cut</option>
-              <option value="Taper + Mullet">Taper + Mullet</option>
-              <option value="Low Taper Fade">Low Taper Fade</option>
-              <option value="Others">Others</option>
-            </select>
+            <select id="service" required><option value="">Loading services...</option></select>
+          </div>
+
+          <div class="service-selection">
+            <label for="preferredBarber">Preferred Barber</label>
+            <select id="preferredBarber"><option value="">Any barber (fastest)</option></select>
           </div>
 
           <button class="primary-btn" id="joinQueueBtn" type="button">✂ Join Queue</button>
@@ -94,9 +94,9 @@
         <section class="card side-card">
           <h2>How It Works</h2>
           <ol>
-            <li><strong>Choose a service and join the queue</strong><span>Select your service before requesting your queue number.</span></li>
-            <li><strong>Wait for your turn</strong><span>Check your queue status and estimated waiting time.</span></li>
-            <li><strong>Get your haircut</strong><span>When your number is called, proceed to your barber.</span></li>
+            <li><strong>Choose a service and join the queue</strong><span>Pick a barber if you have a favourite, or any barber for the shortest wait.</span></li>
+            <li><strong>Wait for your turn</strong><span>This page updates by itself and alerts you when it's your turn.</span></li>
+            <li><strong>Get your haircut, then rate your barber</strong><span>Pay at the counter, then rate the barber who served you.</span></li>
           </ol>
           <div class="thanks">
             <strong>✂ Thanks for choosing Renz Barbershop!</strong>
@@ -110,9 +110,9 @@
           <div>
             <div class="eyebrow">YOUR WAITING STATUS</div>
             <h1>My Queue</h1>
-            <p class="muted">Check your queue number and estimated waiting time.</p>
+            <p class="muted">Your place in today's queue. This page updates every few seconds.</p>
           </div>
-          <button class="secondary-btn" id="refreshQueueBtn" type="button">Refresh Status</button>
+          <button class="secondary-btn" id="refreshQueueBtn" type="button">Refresh</button>
         </div>
 
         <section class="stats">
@@ -120,7 +120,13 @@
           <article class="card"><div class="stat-label">Estimated Wait</div><div class="stat-value" id="waitTime2">—</div></article>
           <article class="card"><div class="stat-label">Status</div><div class="stat-value" id="queueStatus2">Not queued</div></article>
         </section>
-        <p class="muted" id="queueVisitInfo">You haven't joined today's queue yet.</p>
+
+        <section class="card spaced">
+          <h2>Visit details</h2>
+          <p class="muted" id="visitDetails">You haven't joined today's queue yet.</p>
+          <button class="danger-btn hidden" id="leaveQueueBtn" type="button">Leave the queue</button>
+          <div id="leaveMessage" class="message" role="status"></div>
+        </section>
       </section>
 
       <section class="page-section" id="barbersPage" hidden>
@@ -128,32 +134,23 @@
           <div>
             <div class="eyebrow">MEET THE TEAM</div>
             <h1>Our Barbers</h1>
-            <p class="muted">View barber profiles, specialties, availability, and customer ratings.</p>
+            <p class="muted">Barber profiles, specialties, who is free right now, and customer ratings.</p>
           </div>
-          <button class="secondary-btn" id="refreshBarbersBtn" type="button">Refresh Barbers</button>
+          <button class="secondary-btn" id="refreshBarbersBtn" type="button">Refresh</button>
         </div>
         <div class="message" id="barbersMessage" role="status" aria-live="polite"></div>
-        <div class="barber-grid" id="barberList"><div class="empty-state">Click Barbers to load barber profiles.</div></div>
-      </section>
-
-      <section class="page-section" id="visitPage" hidden>
-        <div class="eyebrow">VISIT INFORMATION</div>
-        <h1>My Visit</h1>
-        <section class="card visit-card">
-          <h2>Today's Visit</h2>
-          <p id="visitInfo" class="muted">You haven't joined today's queue yet.</p>
-          <button class="secondary-btn" id="refreshVisitBtn" type="button">Refresh Status</button>
-        </section>
+        <div class="barber-grid" id="barberList"><div class="empty-state">Loading barbers...</div></div>
       </section>
 
       <section class="page-section" id="ratingPage" hidden>
         <div class="eyebrow">SHARE YOUR EXPERIENCE</div>
         <h1>Rate a Barber</h1>
-        <p class="muted">Tell us about your experience. Please rate only a barber who served you.</p>
+        <p class="muted">You can rate the barber who served you once your visit is completed.</p>
 
-        <form class="card rating-panel" id="ratingForm">
-          <label for="ratingBarber">Choose a Barber</label>
-          <select id="ratingBarber" required><option value="">Select a barber</option></select>
+        <div class="empty-state spaced" id="ratingUnavailable">Finish a visit first, then come back here to rate your barber.</div>
+
+        <form class="card rating-panel hidden" id="ratingForm">
+          <p class="rating-for" id="ratingFor"></p>
 
           <label>Your Rating</label>
           <div class="star-picker" id="starPicker" aria-label="Select a rating">
@@ -172,11 +169,18 @@
           <div id="ratingMessage" class="message" role="status" aria-live="polite"></div>
         </form>
       </section>
+
+      <section class="page-section" id="visitsPage" hidden>
+        <div class="eyebrow">YOUR HISTORY</div>
+        <h1>My Visits</h1>
+        <div id="visitsContent" class="spaced"></div>
+      </section>
     </main>
 
     <footer>RENZ BARBERSHOP | YOUR STYLE. YOUR TURN. YOUR TIME.</footer>
   </div>
 
+  <script src="/js/common.js"></script>
   <script src="/js/dashboard.js"></script>
 </body>
 </html>

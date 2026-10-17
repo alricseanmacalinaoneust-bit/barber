@@ -37,11 +37,28 @@ document.addEventListener("DOMContentLoaded", () => {
       }
 
       showMessage("Verified. Redirecting...", true);
-      window.location.href = "/admin.html";
+      window.location.href = data.redirectUrl || "/admin.html";
     } catch (error) {
       showMessage(error.message || "Unable to verify the code.");
     } finally {
       submitButton.disabled = false;
+    }
+  });
+
+  document.getElementById("resendBtn").addEventListener("click", async event => {
+    const button = event.target;
+    button.disabled = true;
+
+    try {
+      const response = await fetch("/api/auth/resend-code", { method: "POST", credentials: "same-origin" });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || "Could not send a new code.");
+      showMessage(data.message, true);
+    } catch (error) {
+      showMessage(error.message);
+    } finally {
+      // Short pause so the button isn't pressed repeatedly.
+      setTimeout(() => { button.disabled = false; }, 30000);
     }
   });
 });

@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Front Desk | Renz Barbershop</title>
+
+  <link rel="stylesheet" href="/css/app.css">
+</head>
+
+<body>
+  <aside class="sidebar" id="sidebar">
+    <div class="brand">
+      <div class="brand-icon">✂</div>
+      <div>
+        <h2>RENZ</h2>
+        <small>BARBERSHOP</small>
+      </div>
+    </div>
+
+    <p class="menu-title">CASHIER MENU</p>
+
+    <nav class="nav" aria-label="Cashier navigation">
+      <button class="nav-link" data-page="desk" type="button"><span>▤</span> Front Desk</button>
+      <button class="nav-link" data-page="payments" type="button"><span>₱</span> Payments</button>
+      <button class="nav-link" data-page="customers" type="button"><span>◉</span> Customers</button>
+      <button class="nav-link" data-page="account" type="button"><span>⚙</span> My Account</button>
+      <button class="nav-link" id="logoutBtn" type="button"><span>↪</span> Log Out</button>
+    </nav>
+
+    <div class="sidebar-bottom">
+      Front desk<br>Your style. Your turn. Your time.
+    </div>
+  </aside>
+
+  <div class="page">
+    <header class="topbar">
+      <h2 id="pageTitle">Front Desk</h2>
+      <span class="greeting" id="userGreeting">Hi</span>
+    </header>
+
+    <div class="banner hidden" id="passwordBanner">
+      You're using a temporary password. <button class="text-btn" type="button" data-open-account>Change it now</button>
+    </div>
+
+    <main class="container" id="pageContent"></main>
+
+    <footer>RENZ BARBERSHOP | FRONT DESK</footer>
+  </div>
+
+  <script src="/js/common.js"></script>
+  <script src="/js/desk.js"></script>
+  <script src="/js/cashier.js"></script>
+</body>
+</html>

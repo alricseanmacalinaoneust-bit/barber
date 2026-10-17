@@ -1,554 +1,361 @@
-document.addEventListener("DOMContentLoaded", () => {
-  const name = (sessionStorage.getItem("customerName") || "").trim();
+// Customer dashboard: join the queue, follow your turn, meet the barbers, rate a visit, see past visits.
+(async function () {
+  const { api, escapeHTML, money, setMessage, statusPill } = App;
+  const $ = id => document.getElementById(id);
 
+  // A customer with an account, or a guest who entered their name on the login page.
+  let account = null;
+  try {
+    const { user } = await api("/api/auth/me");
+    if (user.role !== "customer") {
+      window.location.replace(App.HOME_PAGES[user.role] || "/login.html");
+      return;
+    }
+    account = user;
+  } catch {
+    // Not signed in: continue as a guest.
+  }
+
+  const name = account ? account.name : (sessionStorage.getItem("customerName") || "").trim();
   if (!name) {
     window.location.replace("/login.html");
     return;
   }
 
-  const $ = id => document.getElementById(id);
-
   const state = {
     ticket: null,
+    services: [],
     barbers: [],
-    selectedRating: 0,
-    joining: false,
-    loadingQueue: false
+    rating: 0,
+    rateTicket: null,
+    alerted: false
   };
 
   $("welcomeTitle").textContent = `Welcome, ${name}!`;
-  $("customerGreeting").textContent = `Hi, ${name}`;
+  $("customerGreeting").textContent = account ? `Hi, ${name}` : `Hi, ${name} (guest)`;
 
-  function setMessage(id, text, type = "") {
-    const element = $(id);
-    if (!element) return;
-    element.textContent = text;
-    element.className = "message" + (type ? " " + type : "");
-  }
+  // ---------- Pages ----------
 
-  function escapeHTML(value) {
-    return String(value ?? "").replace(/[&<>"']/g, char => ({
-      "&": "&amp;",
-      "<": "&lt;",
-      ">": "&gt;",
-      '"': "&quot;",
-      "'": "&#39;"
-    })[char]);
-  }
-
-  function safePhoto(value) {
-    if (!value) return "";
-
-    try {
-      const url = new URL(value, window.location.origin);
-      if (!["http:", "https:"].includes(url.protocol)) return "";
-      if (url.protocol === "http:" && url.origin !== window.location.origin) return "";
-      return url.href;
-    } catch {
-      return "";
-    }
-  }
-
-  function getTicketFromResponse(data) {
-    if (!data) return null;
-
-    if (data.ticket && typeof data.ticket === "object") return data.ticket;
-    if (data.queue && typeof data.queue === "object") return data.queue;
-
-    if (Array.isArray(data.tickets)) {
-      return data.tickets.find(ticket => isActiveTicket(ticket)) || data.tickets[0] || null;
-    }
-
-    if (Array.isArray(data.queue)) {
-      return data.queue.find(ticket => isActiveTicket(ticket)) || data.queue[0] || null;
-    }
-
-    return data;
-  }
-
-  function isActiveTicket(ticket) {
-    if (!ticket) return false;
-
-    const status = String(ticket.status || "waiting").toLowerCase();
-
-    return ![
-      "completed", "served", "done", "cancelled",
-      "canceled", "finished", "rejected"
-    ].includes(status);
-  }
-
-  function hasQueueNumber(ticket) {
-    return !!ticket && (
-      ticket.queueNumber != null ||
-      ticket.number != null ||
-      ticket.queueNo != null
-    );
-  }
-
-  function updateJoinControls(hasTicket) {
-    const button = $("joinQueueBtn");
-    const service = $("service");
-
-    if (state.joining) {
-      button.disabled = true;
-      button.textContent = "Joining...";
-      service.disabled = true;
-      return;
-    }
-
-    button.disabled = hasTicket;
-    button.textContent = hasTicket ? "Already in Queue" : "✂ Join Queue";
-    service.disabled = hasTicket;
-  }
-
-  function displayQueue(ticket) {
-    if (!ticket || !hasQueueNumber(ticket)) return;
-
-    state.ticket = ticket;
-
-    const number = ticket.queueNumber ?? ticket.number ?? ticket.queueNo;
-    const wait = ticket.estimatedMinutes
-      ?? ticket.estimatedWaitMinutes
-      ?? ticket.waitingTime
-      ?? ticket.estimatedWait;
-
-    const status = ticket.status || "Waiting";
-    const waitText = wait == null
-      ? "Not available"
-      : typeof wait === "number"
-        ? `${wait} min`
-        : String(wait);
-
-    $("queueNumber").textContent = number;
-    $("waitTime").textContent = waitText;
-    $("queueStatus").textContent = status;
-
-    $("queueNumber2").textContent = number;
-    $("waitTime2").textContent = waitText;
-    $("queueStatus2").textContent = status;
-
-    const serviceText = ticket.service ? ` Service: ${ticket.service}.` : "";
-    const info = `Queue number: ${number}. Status: ${status}.${serviceText}`;
-
-    $("visitInfo").textContent = info;
-    $("queueVisitInfo").textContent = info;
-
-    if (ticket.service) $("service").value = ticket.service;
-
-    updateJoinControls(true);
-  }
-
-  function clearQueue() {
-    state.ticket = null;
-
-    $("queueNumber").textContent = "—";
-    $("waitTime").textContent = "—";
-    $("queueStatus").textContent = "Not queued";
-
-    $("queueNumber2").textContent = "—";
-    $("waitTime2").textContent = "—";
-    $("queueStatus2").textContent = "Not queued";
-
-    $("visitInfo").textContent = "You haven't joined today's queue yet.";
-    $("queueVisitInfo").textContent = "You haven't joined today's queue yet.";
-
-    updateJoinControls(false);
-  }
-
-  async function loadQueue() {
-    // Avoid overlapping queue lookups.
-    if (state.loadingQueue) return;
-
-    state.loadingQueue = true;
-
-    try {
-      const response = await fetch("/api/queue/mine", {
-        method: "GET",
-        credentials: "same-origin",
-        headers: { Accept: "application/json" }
-      });
-
-      // Do not clear the current ticket just because the server
-      // reports an error or the customer is temporarily unauthorized.
-      if (!response.ok) {
-        if (response.status === 404 && !state.ticket) {
-          clearQueue();
-        } else {
-          console.warn("Queue lookup returned HTTP", response.status);
-        }
-        return;
-      }
-
-      const data = await response.json();
-      const ticket = getTicketFromResponse(data);
-
-      if (hasQueueNumber(ticket)) {
-        displayQueue(ticket);
-      } else if (!state.ticket) {
-        clearQueue();
-      } else {
-        // Preserve the displayed ticket if the API response is empty.
-        updateJoinControls(true);
-      }
-    } catch (error) {
-      console.error("Unable to load queue:", error);
-      // Keep the existing ticket on screen if the network fails.
-    } finally {
-      state.loadingQueue = false;
-    }
-  }
+  const titles = {
+    dashboard: "Customer Dashboard",
+    queue: "My Queue",
+    barbers: "Our Barbers",
+    rating: "Rate a Barber",
+    visits: "My Visits"
+  };
 
   function openPage(page) {
-    const pageNames = {
-      dashboard: "Customer Dashboard",
-      queue: "My Queue",
-      barbers: "Our Barbers",
-      visit: "My Visit",
-      rating: "Rate a Barber"
-    };
-
-    const target = $(page + "Page");
-    if (!pageNames[page] || !target) return;
+    if (!titles[page]) return;
 
     document.querySelectorAll(".page-section").forEach(section => {
-      section.hidden = true;
+      section.hidden = section.id !== page + "Page";
     });
-
-    target.hidden = false;
-
     document.querySelectorAll(".nav-link[data-page]").forEach(button => {
       button.classList.toggle("active", button.dataset.page === page);
     });
-
-    $("pageTitle").textContent = pageNames[page];
-
-    // Reload server data without resetting the ticket.
-    if (page === "dashboard" || page === "queue" || page === "visit") {
-      loadQueue();
-    }
-
-    if (page === "barbers") loadBarbers();
-
+    $("pageTitle").textContent = titles[page];
     window.scrollTo({ top: 0, behavior: "smooth" });
+
+    if (page === "dashboard" || page === "queue") loadQueue();
+    if (page === "barbers") loadBarbers();
+    if (page === "rating") prepareRating();
+    if (page === "visits") loadVisits();
   }
 
   document.querySelectorAll(".nav-link[data-page]").forEach(button => {
     button.addEventListener("click", () => openPage(button.dataset.page));
   });
 
-  // Join the queue.
+  $("sidebarLogout").addEventListener("click", App.logout);
+
+  // ---------- Joining ----------
+
+  async function loadOptions() {
+    try {
+      [state.services, state.barbers] = await Promise.all([api("/api/services"), api("/api/barbers")]);
+
+      $("service").innerHTML = '<option value="">-- Select a service --</option>' + state.services.map(s =>
+        `<option value="${s.id}">${escapeHTML(s.name)} · ${money(s.price)} · about ${s.durationMinutes} min</option>`
+      ).join("");
+
+      $("preferredBarber").innerHTML = '<option value="">Any barber (fastest)</option>' + state.barbers.map(b =>
+        `<option value="${b.id}">${escapeHTML(b.name)}${b.status === "unavailable" ? " (off duty today)" : ""}</option>`
+      ).join("");
+    } catch (error) {
+      setMessage($("queueMessage"), error.message, "error");
+    }
+  }
+
+  function waitText(ticket) {
+    if (ticket.status === "serving") return "Now";
+    if (ticket.status !== "waiting") return "—";
+    return ticket.peopleAhead === 0 ? "You're next" : `About ${ticket.estimatedMinutes} min`;
+  }
+
+  const statusText = {
+    waiting: "Waiting",
+    serving: "It's your turn",
+    completed: "Completed",
+    "no-show": "Missed (no-show)",
+    cancelled: "Left the queue"
+  };
+
+  function renderTicket() {
+    const t = state.ticket;
+    const active = t && ["waiting", "serving"].includes(t.status);
+
+    const number = t ? `#${t.queueNumber}` : "—";
+    const wait = t ? waitText(t) : "—";
+    const status = t ? statusText[t.status] || t.status : "Not queued";
+
+    $("queueNumber").textContent = number;
+    $("queueNumber2").textContent = number;
+    $("waitTime").textContent = wait;
+    $("waitTime2").textContent = wait;
+    $("queueStatus").textContent = status;
+    $("queueStatus2").textContent = status;
+    $("aheadText").textContent = t && t.status === "waiting"
+      ? `${t.peopleAhead} customer(s) ahead of you.`
+      : "Based on the customers ahead of you.";
+
+    if (!t) {
+      $("visitDetails").textContent = "You haven't joined today's queue yet.";
+    } else {
+      const parts = [`${t.service} (${money(t.price)})`];
+      if (t.barberName) parts.push(`with ${t.barberName}`);
+      else if (t.preferredBarberName) parts.push(`you asked for ${t.preferredBarberName}`);
+      else parts.push("first available barber");
+      $("visitDetails").innerHTML = `${escapeHTML(parts.join(", "))}. ${statusPill(t.status)}${t.status === "completed" && !t.rated ? ' <button class="text-btn" type="button" id="rateNowBtn">Rate your barber</button>' : ""}`;
+    }
+
+    $("leaveQueueBtn").classList.toggle("hidden", !(t && t.status === "waiting"));
+
+    $("joinQueueBtn").disabled = Boolean(active);
+    $("joinQueueBtn").textContent = active ? "You're in the queue" : "✂ Join Queue";
+    $("service").disabled = Boolean(active);
+    $("preferredBarber").disabled = Boolean(active);
+
+    // Alert once when the customer is called.
+    if (t && t.status === "serving" && !state.alerted) {
+      state.alerted = true;
+      $("turnBarber").textContent = t.barberName || "your barber";
+      $("turnAlert").classList.remove("hidden");
+      document.title = "Your turn! | Renz Barbershop";
+      beep();
+    }
+    if (!t || t.status !== "serving") state.alerted = false;
+  }
+
+  function beep() {
+    try {
+      const context = new AudioContext();
+      [0, 0.4].forEach(offset => {
+        const tone = context.createOscillator();
+        const volume = context.createGain();
+        tone.frequency.value = 880;
+        volume.gain.value = 0.15;
+        tone.connect(volume).connect(context.destination);
+        tone.start(context.currentTime + offset);
+        tone.stop(context.currentTime + offset + 0.25);
+      });
+    } catch {
+      // Sound is optional.
+    }
+  }
+
+  $("dismissAlert").addEventListener("click", () => {
+    $("turnAlert").classList.add("hidden");
+    document.title = "Customer Dashboard | Renz Barbershop";
+  });
+
+  async function loadQueue() {
+    try {
+      const { ticket } = await api("/api/queue/mine");
+      state.ticket = ticket;
+    } catch (error) {
+      if (error.status !== 404) return; // Keep showing the last status if the server is unreachable.
+      state.ticket = null;
+    }
+    renderTicket();
+  }
+
   $("joinQueueBtn").addEventListener("click", async () => {
-    if (state.ticket || state.joining) return;
-
-    const service = $("service").value.trim();
-
-    if (!service) {
-      setMessage("queueMessage", "Please select a service.", "error");
+    const serviceId = $("service").value;
+    if (!serviceId) {
+      setMessage($("queueMessage"), "Please select a service.", "error");
       $("service").focus();
       return;
     }
 
-    state.joining = true;
-    updateJoinControls(false);
-    setMessage("queueMessage", "");
+    $("joinQueueBtn").disabled = true;
+    setMessage($("queueMessage"), "Joining...");
 
     try {
-      const response = await fetch("/api/queue", {
+      const { ticket } = await api("/api/queue", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Accept": "application/json"
-        },
-        credentials: "same-origin",
-        body: JSON.stringify({
-          name,
-          customerName: name,
-          service
-        })
+        body: { name, serviceId, preferredBarberId: $("preferredBarber").value }
       });
-
-      const data = await response.json().catch(() => ({}));
-
-      if (!response.ok) {
-        // If the server reports an existing ticket, attempt to load it.
-        await loadQueue();
-        throw new Error(
-          data.error || data.message || "Unable to join the queue."
-        );
-      }
-
-      const ticket = getTicketFromResponse(data);
-
-      if (!hasQueueNumber(ticket)) {
-        // The server may have created the ticket even if its response
-        // shape differs. Look it up before allowing another submission.
-        await loadQueue();
-
-        if (!state.ticket) {
-          throw new Error(
-            "The API did not return a queue number. Check the response from routes/queue.js."
-          );
-        }
-      } else {
-        ticket.service = ticket.service || service;
-        ticket.status = ticket.status || "waiting";
-        ticket.estimatedMinutes = ticket.estimatedMinutes
-          ?? data.estimatedMinutes;
-
-        displayQueue(ticket);
-      }
-
-      setMessage(
-        "queueMessage",
-        `Successfully joined the queue! Service: ${service}.`,
-        "success"
-      );
+      state.ticket = ticket;
+      setMessage($("queueMessage"), `You're #${ticket.queueNumber} in the queue for ${ticket.service}.`, "success");
     } catch (error) {
-      console.error("Unable to join queue:", error);
-      setMessage("queueMessage", error.message, "error");
-    } finally {
-      state.joining = false;
-      updateJoinControls(!!state.ticket);
+      setMessage($("queueMessage"), error.message, "error");
+      await loadQueue();
     }
+    renderTicket();
   });
 
-  async function loadBarbers() {
-    $("barberList").innerHTML =
-      '<div class="empty-state">Loading barber profiles...</div>';
-
-    setMessage("barbersMessage", "");
+  $("leaveQueueBtn").addEventListener("click", async () => {
+    if (!confirm("Leave the queue? You'll lose your place.")) return;
 
     try {
-      const response = await fetch("/api/barbers", {
-        credentials: "same-origin",
-        headers: { Accept: "application/json" }
-      });
-
-      if (!response.ok) {
-        throw new Error(`Could not load barbers (HTTP ${response.status}).`);
-      }
-
-      const data = await response.json();
-      const barbers = Array.isArray(data) ? data : data.barbers;
-
-      if (!Array.isArray(barbers)) {
-        throw new Error("Unexpected response from /api/barbers.");
-      }
-
-      state.barbers = barbers;
-      updateBarberSelect(barbers);
-
-      if (!barbers.length) {
-        $("barberList").innerHTML = `
-          <div class="empty-state">
-            <h2>No barber profiles yet</h2>
-            <p>The barbershop owner needs to add barber profiles through the admin system.</p>
-          </div>`;
-        return;
-      }
-
-      $("barberList").innerHTML = barbers.map(barber => {
-        const id = barber._id || barber.id || "";
-        const barberName = barber.name || "Barber";
-        const photo = safePhoto(
-          barber.photoUrl || barber.profilePicture || barber.photo
-        );
-
-        const rating = Number(barber.averageRating ?? barber.rating ?? 0);
-        const safeRating = Number.isFinite(rating)
-          ? Math.min(5, Math.max(0, rating))
-          : 0;
-
-        const reviews = Math.max(0, Number(barber.reviewCount || 0));
-
-        const availability =
-          barber.available === true || barber.status === "available";
-
-        const unavailable =
-          barber.available === false || barber.status === "unavailable";
-
-        const statusClass = unavailable
-          ? "unavailable"
-          : availability
-            ? "available"
-            : "busy";
-
-        const statusText = unavailable
-          ? "Unavailable"
-          : availability
-            ? "Available"
-            : "Currently busy";
-
-        const stars =
-          "★".repeat(Math.round(safeRating)) +
-          "☆".repeat(5 - Math.round(safeRating));
-
-        const initial = escapeHTML(barberName.charAt(0).toUpperCase());
-
-        return `
-          <article class="barber-card">
-            <div class="barber-photo">
-              ${photo
-                ? `<img src="${escapeHTML(photo)}" alt="${escapeHTML(barberName)}" loading="lazy" onerror="this.remove();">`
-                : `<div class="barber-avatar">${initial}</div>`
-              }
-            </div>
-            <div class="barber-info">
-              <h2>${escapeHTML(barberName)}</h2>
-              <p class="barber-specialty">${escapeHTML(barber.specialty || barber.expertise || "General Barber")}</p>
-              <p class="barber-bio">${escapeHTML(barber.bio || barber.description || "Welcome to our barbershop!")}</p>
-              <p><strong>Experience:</strong> ${escapeHTML(barber.experience || "Not specified")}</p>
-              <p><strong>Services:</strong> ${escapeHTML(
-                Array.isArray(barber.services)
-                  ? barber.services.join(", ")
-                  : barber.services || "Haircut and grooming"
-              )}</p>
-              <span class="barber-status ${statusClass}">${statusText}</span>
-              <div class="barber-rating">
-                <div class="stars">${stars}</div>
-                <div class="rating-text">${safeRating.toFixed(1)} / 5 · ${reviews} review(s)</div>
-              </div>
-              <div class="barber-actions">
-                <button class="primary-btn rate-this-barber" type="button" data-barber-id="${escapeHTML(id)}">★ Rate Barber</button>
-              </div>
-            </div>
-          </article>`;
-      }).join("");
-
-      document.querySelectorAll(".rate-this-barber").forEach(button => {
-        button.addEventListener("click", () => {
-          $("ratingBarber").value = button.dataset.barberId;
-          openPage("rating");
-        });
-      });
+      const result = await api("/api/queue/mine/leave", { method: "POST" });
+      setMessage($("leaveMessage"), result.message, "success");
     } catch (error) {
-      console.error("Unable to load barber profiles:", error);
+      setMessage($("leaveMessage"), error.message, "error");
+    }
+    await loadQueue();
+  });
 
-      $("barberList").innerHTML = `
-        <div class="empty-state">
-          <h2>Unable to load barbers</h2>
-          <p>Check that your server is running and the /api/barbers endpoint is working.</p>
-        </div>`;
+  $("refreshQueueBtn").addEventListener("click", loadQueue);
+  document.addEventListener("click", event => {
+    if (event.target.id === "rateNowBtn") openPage("rating");
+  });
 
-      setMessage("barbersMessage", error.message, "error");
+  // ---------- Barbers ----------
+
+  async function loadBarbers() {
+    setMessage($("barbersMessage"), "");
+
+    try {
+      state.barbers = await api("/api/barbers");
+      $("barberList").innerHTML = state.barbers.length
+        ? state.barbers.map(b => App.barberCard(b)).join("")
+        : '<div class="empty-state"><h2>No barber profiles yet</h2><p>Please check back soon.</p></div>';
+    } catch (error) {
+      $("barberList").innerHTML = '<div class="empty-state"><h2>Unable to load barbers</h2><p>Please try again.</p></div>';
+      setMessage($("barbersMessage"), error.message, "error");
     }
   }
 
-  function updateBarberSelect(barbers) {
-    const select = $("ratingBarber");
-    const previousValue = select.value;
+  $("refreshBarbersBtn").addEventListener("click", loadBarbers);
 
-    select.innerHTML = '<option value="">Select a barber</option>';
-
-    barbers.forEach(barber => {
-      const option = document.createElement("option");
-      option.value = barber._id || barber.id || "";
-      option.textContent = barber.name || "Barber";
-      select.appendChild(option);
-    });
-
-    if (previousValue) select.value = previousValue;
-  }
+  // ---------- Rating ----------
 
   function chooseRating(value) {
-    state.selectedRating = value;
-
+    state.rating = value;
     document.querySelectorAll("#starPicker button").forEach(button => {
       const selected = Number(button.dataset.rating) <= value;
       button.classList.toggle("selected", selected);
       button.setAttribute("aria-pressed", String(selected));
     });
-
-    $("ratingHelp").textContent = value
-      ? `${value} out of 5 stars selected.`
-      : "Select 1 to 5 stars.";
+    $("ratingHelp").textContent = value ? `${value} out of 5 stars selected.` : "Select 1 to 5 stars.";
   }
 
   document.querySelectorAll("#starPicker button").forEach(button => {
-    button.addEventListener("click", () => {
-      chooseRating(Number(button.dataset.rating));
-    });
+    button.addEventListener("click", () => chooseRating(Number(button.dataset.rating)));
   });
+
+  // Rates today's completed visit, or a past visit chosen from My Visits.
+  function prepareRating(visit) {
+    const t = visit || state.ticket;
+    const canRate = t && t.status === "completed" && !t.rated && t.barberId;
+
+    state.rateTicket = canRate ? t : null;
+    $("ratingForm").classList.toggle("hidden", !canRate);
+    $("ratingUnavailable").classList.toggle("hidden", Boolean(canRate));
+    $("ratingUnavailable").textContent = t && t.rated
+      ? "Thank you! You've already rated this visit."
+      : "Finish a visit first, then come back here to rate the barber who served you.";
+
+    if (canRate) {
+      $("ratingFor").innerHTML = `Rating <strong>${escapeHTML(t.barberName)}</strong> for your ${escapeHTML(t.service)}${t.queueDate ? ` on ${escapeHTML(t.queueDate)}` : " today"}.`;
+      chooseRating(0);
+      setMessage($("ratingMessage"), "");
+    }
+  }
 
   $("ratingForm").addEventListener("submit", async event => {
     event.preventDefault();
+    const t = state.rateTicket;
+    if (!t) return;
 
-    const barberId = $("ratingBarber").value;
-    const comment = $("ratingComment").value.trim();
-
-    if (!barberId) {
-      setMessage("ratingMessage", "Please choose a barber.", "error");
+    if (!state.rating) {
+      setMessage($("ratingMessage"), "Please select a star rating.", "error");
       return;
     }
 
-    if (!state.selectedRating) {
-      setMessage("ratingMessage", "Please select a star rating.", "error");
-      return;
-    }
-
-    if (!state.ticket) {
-      setMessage("ratingMessage", "Please join the queue and complete your visit before rating a barber.", "error");
-      return;
-    }
-
-    const status = String(state.ticket.status || "").toLowerCase();
-
-    if (!["completed", "served", "done"].includes(status)) {
-      setMessage("ratingMessage", "You can submit a rating after your visit is marked completed by the barbershop.", "error");
-      return;
-    }
-
-    const submit = $("submitRatingBtn");
-    submit.disabled = true;
-    submit.textContent = "Submitting...";
+    $("submitRatingBtn").disabled = true;
 
     try {
-      const response = await fetch(
-        `/api/barbers/${encodeURIComponent(barberId)}/ratings`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Accept": "application/json"
-          },
-          credentials: "same-origin",
-          body: JSON.stringify({
-            rating: state.selectedRating,
-            comment,
-            customerName: name,
-            queueTicketId: state.ticket._id || state.ticket.id
-          })
-        }
-      );
-
-      const data = await response.json().catch(() => ({}));
-
-      if (!response.ok) {
-        throw new Error(data.error || data.message || "Rating was not saved. Check the backend rating endpoint.");
-      }
-
-      setMessage("ratingMessage", "Thank you! Your rating was submitted.", "success");
+      const result = await api(`/api/barbers/${t.barberId}/ratings`, {
+        method: "POST",
+        body: { rating: state.rating, comment: $("ratingComment").value.trim(), ticketId: t.id }
+      });
+      t.rated = true;
+      if (state.ticket && state.ticket.id === t.id) state.ticket.rated = true;
       $("ratingComment").value = "";
-      chooseRating(0);
-      await loadBarbers();
+      $("ratingForm").classList.add("hidden");
+      $("ratingUnavailable").classList.remove("hidden");
+      $("ratingUnavailable").textContent = result.message;
     } catch (error) {
-      console.error("Rating submission failed:", error);
-      setMessage("ratingMessage", error.message, "error");
+      setMessage($("ratingMessage"), error.message, "error");
     } finally {
-      submit.disabled = false;
-      submit.textContent = "Submit Rating";
+      $("submitRatingBtn").disabled = false;
     }
   });
 
-  $("refreshBarbersBtn").addEventListener("click", loadBarbers);
-  $("refreshQueueBtn").addEventListener("click", loadQueue);
-  $("refreshVisitBtn").addEventListener("click", loadQueue);
+  // ---------- Visits ----------
 
-  $("sidebarLogout").addEventListener("click", () => {
-    sessionStorage.removeItem("customerName");
-    window.location.replace("/login.html");
-  });
+  async function loadVisits() {
+    const box = $("visitsContent");
 
-  // Restore the customer's existing ticket when the dashboard opens.
-  loadQueue();
-});
+    if (!account) {
+      box.innerHTML = `
+        <div class="card">
+          <h2>Keep track of your visits</h2>
+          <p class="muted">You're using the queue as a guest. Create a free account to see your past visits and rate them any time.</p>
+          <a class="primary-btn" href="/login.html#register">Create an account</a>
+        </div>`;
+      return;
+    }
+
+    try {
+      const visits = await api("/api/queue/history");
+      box.innerHTML = visits.length ? `
+        <div class="card">
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead><tr><th>Date</th><th>Service</th><th>Barber</th><th>Status</th><th>Paid</th><th></th></tr></thead>
+              <tbody>${visits.map(v => `
+                <tr>
+                  <td>${escapeHTML(v.queueDate)}</td>
+                  <td>${escapeHTML(v.service)}</td>
+                  <td>${escapeHTML(v.barberName || "—")}</td>
+                  <td>${statusPill(v.status)}</td>
+                  <td>${v.amountPaid != null ? money(v.amountPaid) : "—"}</td>
+                  <td>${v.status === "completed" && v.barberId
+                    ? v.rated ? '<span class="muted small">Rated</span>' : `<button class="secondary-btn small" type="button" data-rate-visit="${v.id}">Rate</button>`
+                    : ""}</td>
+                </tr>`).join("")}
+              </tbody>
+            </table>
+          </div>
+        </div>` : '<div class="empty-state">No visits yet. Join the queue to get started.</div>';
+
+      box.querySelectorAll("[data-rate-visit]").forEach(button => {
+        button.addEventListener("click", () => {
+          const visit = visits.find(v => v.id === button.dataset.rateVisit);
+          openPage("rating");
+          prepareRating(visit);
+        });
+      });
+    } catch (error) {
+      box.innerHTML = `<div class="empty-state">${escapeHTML(error.message)}</div>`;
+    }
+  }
+
+  // ---------- Start ----------
+
+  await Promise.all([loadOptions(), loadQueue()]);
+  setInterval(loadQueue, 10000);
+})();

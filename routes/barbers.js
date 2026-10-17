@@ -1,234 +1,227 @@
-
 const express = require("express");
-const { ObjectId } = require("mongodb");
-const { requireAuth, requireRole } = require("../middleware/auth");
-const { cleanText } = require("../utils/validation");
+const { requireAuth, optionalAuth, requireRole } = require("../middleware/auth");
+const { cleanText, validName, toObjectId } = require("../utils/validation");
+const { todayKey } = require("../utils/dates");
 
 const router = express.Router();
 
-// GET all active barber profiles and their rating summaries.
-router.get("/", async (req, res) => {
-  try {
-    const db = req.app.locals.db;
+// status: "available" (on duty and free), "busy" (serving someone) or "unavailable" (off duty).
+async function barberViews(db, filter) {
+  const barbers = await db.collection("barbers").find(filter).sort({ name: 1 }).toArray();
 
-    const barbers = await db.collection("barbers")
-      .find({ active: true })
-      .sort({ name: 1 })
-      .toArray();
+  const ratings = await db.collection("barberRatings").aggregate([
+    { $group: { _id: "$barberId", averageRating: { $avg: "$rating" }, reviewCount: { $sum: 1 } } }
+  ]).toArray();
+  const ratingMap = new Map(ratings.map(r => [String(r._id), r]));
 
-    const ratings = await db.collection("barberRatings")
-      .aggregate([
-        {
-          $group: {
-            _id: "$barberId",
-            averageRating: { $avg: "$rating" },
-            reviewCount: { $sum: 1 }
-          }
-        }
-      ])
-      .toArray();
+  const serving = await db.collection("queueTickets")
+    .find({ queueDate: todayKey(), status: "serving" }, { projection: { barberId: 1, queueNumber: 1 } })
+    .toArray();
+  const servingMap = new Map(serving.map(t => [String(t.barberId), t.queueNumber]));
 
-    const ratingMap = new Map(
-      ratings.map(r => [String(r._id), r])
-    );
+  return barbers.map(barber => {
+    const id = String(barber._id);
+    const rating = ratingMap.get(id);
+    const servingNumber = servingMap.get(id) ?? null;
 
-    res.json(barbers.map(barber => {
-      const rating = ratingMap.get(String(barber._id));
+    return {
+      id,
+      name: barber.name,
+      active: barber.active !== false,
+      available: barber.available === true,
+      status: barber.active === false || !barber.available ? "unavailable" : servingNumber ? "busy" : "available",
+      servingNumber,
+      specialty: barber.specialty || "General Barber",
+      bio: barber.bio || "",
+      photoUrl: barber.photoUrl || "",
+      experienceYears: barber.experienceYears || 0,
+      averageRating: rating ? Math.round(rating.averageRating * 10) / 10 : 0,
+      reviewCount: rating ? rating.reviewCount : 0
+    };
+  });
+}
 
-      return {
-        id: String(barber._id),
-        name: barber.name,
-        available: barber.available === true,
-        specialty: barber.specialty || "General Barber",
-        bio: barber.bio || "",
-        photoUrl: barber.photoUrl || "",
-        experienceYears: barber.experienceYears || 0,
-        averageRating: rating
-          ? Math.round(rating.averageRating * 10) / 10
-          : 0,
-        reviewCount: rating ? rating.reviewCount : 0
-      };
-    }));
-  } catch (error) {
-    console.error("Failed to load barbers:", error);
-    res.status(500).json({ error: "Unable to load barbers." });
+function readProfile(body) {
+  const name = cleanText(body.name, 60);
+  const experienceYears = Number(body.experienceYears ?? 0);
+
+  if (!validName(name)) return { error: "Barber name must be 2 to 60 characters." };
+  if (!Number.isInteger(experienceYears) || experienceYears < 0 || experienceYears > 60) {
+    return { error: "Years of experience must be a whole number from 0 to 60." };
   }
+
+  return {
+    value: {
+      name,
+      specialty: cleanText(body.specialty, 80),
+      bio: cleanText(body.bio, 500),
+      photoUrl: cleanText(body.photoUrl, 500),
+      experienceYears
+    }
+  };
+}
+
+// Active barbers for customers and the front desk.
+router.get("/", async (req, res) => {
+  res.json(await barberViews(req.app.locals.db, { active: true }));
 });
 
-// ADMIN: Add a barber.
+// ADMIN: all barbers, including removed ones that can be restored.
+router.get("/all", requireAuth, requireRole("admin"), async (req, res) => {
+  res.json(await barberViews(req.app.locals.db, {}));
+});
+
 router.post("/", requireAuth, requireRole("admin"), async (req, res) => {
+  const { value, error } = readProfile(req.body);
+  if (error) return res.status(400).json({ error });
+
   try {
-    const db = req.app.locals.db;
-    const name = cleanText(req.body.name, 80);
-
-    if (name.length < 2) {
-      return res.status(400).json({
-        error: "Barber name must contain at least 2 characters."
-      });
-    }
-
-    const barber = {
-      name,
+    const result = await req.app.locals.db.collection("barbers").insertOne({
+      ...value,
       active: true,
       available: true,
-      specialty: cleanText(req.body.specialty || "", 80),
-      bio: cleanText(req.body.bio || "", 500),
-      photoUrl: cleanText(req.body.photoUrl || "", 500),
-      experienceYears: Number.isInteger(req.body.experienceYears)
-        && req.body.experienceYears >= 0
-        && req.body.experienceYears <= 60
-        ? req.body.experienceYears
-        : 0,
       createdAt: new Date()
-    };
-
-    const result = await db.collection("barbers").insertOne(barber);
-
-    res.status(201).json({
-      id: String(result.insertedId),
-      ...barber
     });
-  } catch (error) {
-    if (error.code === 11000) {
-      return res.status(409).json({
-        error: "A barber with this name already exists."
-      });
-    }
 
-    console.error("Failed to add barber:", error);
-    res.status(500).json({ error: "Unable to add barber." });
+    res.status(201).json({ id: String(result.insertedId), ...value });
+  } catch (err) {
+    if (err.code === 11000) return res.status(409).json({ error: "A barber with this name already exists (it may be removed — restore it instead)." });
+    throw err;
   }
 });
 
-// ADMIN OR STAFF: Update barber availability.
-router.patch(
-  "/:id/availability",
-  requireAuth,
-  requireRole("admin", "staff"),
-  async (req, res) => {
-    try {
-      const db = req.app.locals.db;
-      const { id } = req.params;
+// ADMIN: edit a profile, or restore a removed barber with { active: true }.
+router.patch("/:id", requireAuth, requireRole("admin"), async (req, res) => {
+  const id = toObjectId(req.params.id);
+  if (!id) return res.status(400).json({ error: "Invalid barber ID." });
 
-      if (!ObjectId.isValid(id)) {
-        return res.status(400).json({ error: "Invalid barber ID." });
-      }
+  const { value, error } = readProfile(req.body);
+  if (error) return res.status(400).json({ error });
 
-      if (typeof req.body.available !== "boolean") {
-        return res.status(400).json({
-          error: "Availability must be true or false."
-        });
-      }
+  if (req.body.active === true) value.active = true;
 
-      const result = await db.collection("barbers").updateOne(
-        { _id: new ObjectId(id), active: true },
-        { $set: { available: req.body.available } }
-      );
-
-      if (!result.matchedCount) {
-        return res.status(404).json({ error: "Barber not found." });
-      }
-
-      res.json({ message: "Availability updated." });
-    } catch (error) {
-      console.error("Failed to update availability:", error);
-      res.status(500).json({
-        error: "Unable to update availability."
-      });
-    }
-  }
-);
-
-
-/* CUSTOMER: Submit a rating for a barber after a completed visit. */
-router.post("/:id/ratings", async (req, res) => {
   try {
-    const db = req.app.locals.db;
-    const { id } = req.params;
+    const result = await req.app.locals.db.collection("barbers").updateOne({ _id: id }, { $set: value });
+    if (!result.matchedCount) return res.status(404).json({ error: "Barber not found." });
+    res.json({ message: "Barber updated." });
+  } catch (err) {
+    if (err.code === 11000) return res.status(409).json({ error: "A barber with this name already exists." });
+    throw err;
+  }
+});
 
-    if (!ObjectId.isValid(id)) {
-      return res.status(400).json({ error: "Invalid barber ID." });
-    }
+// ADMIN: remove a barber. Their past visits and ratings are kept.
+router.delete("/:id", requireAuth, requireRole("admin"), async (req, res) => {
+  const db = req.app.locals.db;
+  const id = toObjectId(req.params.id);
+  if (!id) return res.status(400).json({ error: "Invalid barber ID." });
 
-    const customerName = cleanText(req.body.customerName, 80);
-    const rating = Number(req.body.rating);
-    const comment = cleanText(req.body.comment || "", 500);
+  const serving = await db.collection("queueTickets").findOne({ barberId: id, status: "serving", queueDate: todayKey() });
+  if (serving) return res.status(409).json({ error: `This barber is serving #${serving.queueNumber}. Complete that visit first.` });
 
-    if (customerName.length < 2) {
-      return res.status(400).json({ error: "Enter your customer name." });
-    }
+  const result = await db.collection("barbers").updateOne({ _id: id }, { $set: { active: false, available: false } });
+  if (!result.matchedCount) return res.status(404).json({ error: "Barber not found." });
 
-    if (!Number.isInteger(rating) || rating < 1 || rating > 5) {
-      return res.status(400).json({
-        error: "Rating must be from 1 to 5 stars."
-      });
-    }
+  res.json({ message: "Barber removed." });
+});
 
-    // Customers rating from their own dashboard are identified by the queue
-    // cookie set when they joined; otherwise they enter their queue details.
-    const cookieTicketId = req.signedCookies.queueTicket;
-    let ticketFilter;
+// ADMIN OR CASHIER: mark a barber on duty (available) or off duty.
+router.patch("/:id/availability", requireAuth, requireRole("admin", "cashier"), async (req, res) => {
+  const id = toObjectId(req.params.id);
+  if (!id) return res.status(400).json({ error: "Invalid barber ID." });
 
-    if (cookieTicketId && ObjectId.isValid(cookieTicketId)) {
-      ticketFilter = { _id: new ObjectId(cookieTicketId) };
-    } else {
-      const queueNumber = Number(req.body.queueNumber);
-      const queueDate = cleanText(req.body.queueDate, 10);
+  if (typeof req.body.available !== "boolean") {
+    return res.status(400).json({ error: "Availability must be true or false." });
+  }
 
-      if (!Number.isInteger(queueNumber) || queueNumber < 1) {
-        return res.status(400).json({ error: "Enter a valid queue number." });
-      }
+  const result = await req.app.locals.db.collection("barbers").updateOne(
+    { _id: id, active: true },
+    { $set: { available: req.body.available } }
+  );
 
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(queueDate)) {
-        return res.status(400).json({
-          error: "Enter the queue date in YYYY-MM-DD format."
-        });
-      }
+  if (!result.matchedCount) return res.status(404).json({ error: "Barber not found." });
+  res.json({ message: "Availability updated." });
+});
 
-      ticketFilter = { queueDate, queueNumber };
-    }
+// ADMIN: read a barber's reviews.
+router.get("/:id/ratings", requireAuth, requireRole("admin"), async (req, res) => {
+  const id = toObjectId(req.params.id);
+  if (!id) return res.status(400).json({ error: "Invalid barber ID." });
 
-    const barberId = new ObjectId(id);
+  const ratings = await req.app.locals.db.collection("barberRatings")
+    .find({ barberId: id })
+    .sort({ createdAt: -1 })
+    .limit(100)
+    .toArray();
 
-    const ticket = await db.collection("queueTickets").findOne({
-      ...ticketFilter,
-      customerName: { $regex: "^" + customerName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "$", $options: "i" },
-      // Visits without a chosen barber can rate whoever served them.
-      barberId: { $in: [barberId, null] },
-      status: "completed"
-    });
+  res.json(ratings.map(r => ({
+    id: String(r._id),
+    customerName: r.customerName,
+    rating: r.rating,
+    comment: r.comment,
+    createdAt: r.createdAt
+  })));
+});
 
-    if (!ticket) {
-      return res.status(403).json({
-        error: "We couldn't verify a completed visit with this barber. Check your name and queue details."
-      });
-    }
+// ADMIN: delete a fake or abusive review.
+router.delete("/ratings/:ratingId", requireAuth, requireRole("admin"), async (req, res) => {
+  const id = toObjectId(req.params.ratingId);
+  if (!id) return res.status(400).json({ error: "Invalid review ID." });
 
-    try {
-      await db.collection("barberRatings").insertOne({
-        barberId,
-        queueTicketId: ticket._id,
-        customerName,
-        rating,
-        comment,
-        createdAt: new Date()
-      });
-    } catch (error) {
-      if (error.code === 11000) {
-        return res.status(409).json({
-          error: "This completed queue ticket has already been used to submit a rating."
-        });
-      }
-      throw error;
-    }
+  const result = await req.app.locals.db.collection("barberRatings").deleteOne({ _id: id });
+  if (!result.deletedCount) return res.status(404).json({ error: "Review not found." });
 
-    res.status(201).json({
-      message: "Thank you! Your rating has been submitted."
+  res.json({ message: "Review deleted." });
+});
+
+// CUSTOMER: rate the barber who served a completed visit.
+// The visit must be this device's ticket (guests) or belong to the signed-in customer.
+router.post("/:id/ratings", optionalAuth, async (req, res) => {
+  const db = req.app.locals.db;
+  const barberId = toObjectId(req.params.id);
+  if (!barberId) return res.status(400).json({ error: "Invalid barber ID." });
+
+  const rating = Number(req.body.rating);
+  const comment = cleanText(req.body.comment || "", 500);
+
+  if (!Number.isInteger(rating) || rating < 1 || rating > 5) {
+    return res.status(400).json({ error: "Rating must be from 1 to 5 stars." });
+  }
+
+  let ticketFilter;
+  if (req.user?.role === "customer") {
+    const ticketId = toObjectId(req.body.ticketId);
+    if (!ticketId) return res.status(400).json({ error: "Choose the visit you want to rate." });
+    ticketFilter = { _id: ticketId, customerId: req.user._id };
+  } else {
+    const ticketId = toObjectId(req.signedCookies.queueTicket);
+    if (!ticketId) return res.status(403).json({ error: "Join the queue and finish your visit before rating a barber." });
+    ticketFilter = { _id: ticketId };
+  }
+
+  const ticket = await db.collection("queueTickets").findOne({ ...ticketFilter, status: "completed" });
+  if (!ticket) return res.status(403).json({ error: "You can rate a barber after your visit is completed." });
+
+  if (!ticket.barberId || !ticket.barberId.equals(barberId)) {
+    return res.status(403).json({ error: `You can only rate the barber who served you${ticket.barberName ? ` (${ticket.barberName})` : ""}.` });
+  }
+
+  try {
+    await db.collection("barberRatings").insertOne({
+      barberId,
+      queueTicketId: ticket._id,
+      customerId: ticket.customerId || null,
+      customerName: ticket.customerName,
+      rating,
+      comment,
+      createdAt: new Date()
     });
   } catch (error) {
-    console.error("Failed to submit barber rating:", error);
-    res.status(500).json({ error: "Unable to submit rating." });
+    if (error.code === 11000) return res.status(409).json({ error: "You have already rated this visit." });
+    throw error;
   }
+
+  res.status(201).json({ message: "Thank you! Your rating has been submitted." });
 });
 
 module.exports = router;

@@ -1,28 +1,60 @@
 const express = require("express");
-const { ObjectId } = require("mongodb");
-const { requireAuth, requireRole } = require("../middleware/auth");
-const { cleanText } = require("../utils/validation");
+const { requireAuth, optionalAuth, requireRole } = require("../middleware/auth");
+const { cleanText, validName, toObjectId } = require("../utils/validation");
+const { ticketCookie } = require("../utils/session");
+const { todayKey } = require("../utils/dates");
 
 const router = express.Router();
+const staffOnly = [requireAuth, requireRole("admin", "cashier")];
 
-// "assigned" tickets have picked a barber but are still waiting to be called.
+// Tickets from older versions may say "assigned"; they are treated as waiting.
 const WAITING = ["waiting", "assigned"];
 const ACTIVE = ["waiting", "assigned", "serving"];
+const PAYMENT_METHODS = ["cash", "gcash", "card", "other"];
+const DEFAULT_DURATION = 30;
 
-const ticketCookie = {
-  httpOnly: true,
-  sameSite: "strict",
-  signed: true,
-  maxAge: 24 * 60 * 60 * 1000,
-  secure: process.env.NODE_ENV === "production"
-};
+// "Juan Dela Cruz" -> "Juan C." for public screens.
+function shortName(name) {
+  const parts = String(name || "").trim().split(/\s+/);
+  if (parts.length < 2) return parts[0] || "Customer";
+  return `${parts[0]} ${parts[parts.length - 1].charAt(0)}.`;
+}
 
-function todayKey() {
-  // Local date, so the queue resets at local midnight rather than UTC midnight.
-  const now = new Date();
-  const month = String(now.getMonth() + 1).padStart(2, "0");
-  const day = String(now.getDate()).padStart(2, "0");
-  return `${now.getFullYear()}-${month}-${day}`;
+function ticketView(t) {
+  return {
+    id: String(t._id),
+    queueNumber: t.queueNumber,
+    customerName: t.customerName,
+    hasAccount: Boolean(t.customerId),
+    service: t.service,
+    price: t.price ?? null,
+    durationMinutes: t.durationMinutes || DEFAULT_DURATION,
+    preferredBarberId: t.preferredBarberId ? String(t.preferredBarberId) : null,
+    preferredBarberName: t.preferredBarberName || null,
+    barberId: t.barberId ? String(t.barberId) : null,
+    barberName: t.barberName || null,
+    status: t.status === "assigned" ? "waiting" : t.status,
+    source: t.source || "guest",
+    amountPaid: t.amountPaid ?? null,
+    createdAt: t.createdAt,
+    calledAt: t.calledAt || null,
+    completedAt: t.completedAt || null
+  };
+}
+
+// Wait = service time of everyone ahead, shared between the barbers on duty.
+async function waitEstimate(db, queueNumber) {
+  const filter = { queueDate: todayKey(), status: { $in: WAITING } };
+  if (queueNumber) filter.queueNumber = { $lt: queueNumber };
+
+  const ahead = await db.collection("queueTickets")
+    .find(filter, { projection: { durationMinutes: 1 } })
+    .toArray();
+
+  const minutes = ahead.reduce((sum, t) => sum + (t.durationMinutes || DEFAULT_DURATION), 0);
+  const barbers = await db.collection("barbers").countDocuments({ active: true, available: true });
+
+  return { peopleAhead: ahead.length, estimatedMinutes: Math.ceil(minutes / Math.max(1, barbers)) };
 }
 
 async function nextQueueNumber(db, date) {
@@ -35,280 +67,388 @@ async function nextQueueNumber(db, date) {
   return last ? last.queueNumber + 1 : 1;
 }
 
-async function estimatedMinutes(db, barberCount, upToNumber) {
-  const filter = { queueDate: todayKey(), status: { $in: WAITING } };
-  if (upToNumber) filter.queueNumber = { $lte: upToNumber };
-
-  const waiting = await db.collection("queueTickets").countDocuments(filter);
-  // Simple transparent estimate: 30 minutes per waiting ticket divided by available barbers.
-  const capacity = Math.max(1, barberCount);
-  return Math.ceil((waiting * 30) / capacity);
-}
-
-async function availableBarbers(db) {
-  return db.collection("barbers")
-    .find({ active: true, available: true })
-    .sort({ name: 1 })
-    .toArray();
-}
-
-router.post("/", async (req, res) => {
-  const db = req.app.locals.db;
-  const name = cleanText(req.body.name, 80);
-  const service = cleanText(req.body.service, 80);
-
-  if (name.length < 2) return res.status(400).json({ error: "Customer name is required." });
-  if (service.length < 2) return res.status(400).json({ error: "Please select a service." });
-
+async function createTicket(db, fields) {
   const date = todayKey();
 
-  // One active ticket per browser per day.
-  const existingId = req.signedCookies.queueTicket;
-  if (existingId && ObjectId.isValid(existingId)) {
-    const existing = await db.collection("queueTickets").findOne({
-      _id: new ObjectId(existingId),
-      queueDate: date,
-      status: { $in: ACTIVE }
-    });
-
-    if (existing) return res.status(409).json({ error: "You are already in today's queue." });
-  }
-
-  let number;
-  let result;
-
   for (let attempt = 1; ; attempt++) {
-    number = await nextQueueNumber(db, date);
+    const ticket = {
+      queueDate: date,
+      queueNumber: await nextQueueNumber(db, date),
+      ...fields,
+      status: "waiting",
+      barberId: null,
+      barberName: null,
+      createdAt: new Date(),
+      calledAt: null,
+      completedAt: null
+    };
 
     try {
-      result = await db.collection("queueTickets").insertOne({
-        queueDate: date,
-        queueNumber: number,
-        customerName: name,
-        service,
-        barberId: null,
-        status: "waiting",
-        createdAt: new Date(),
-        calledAt: null,
-        completedAt: null
-      });
-      break;
+      await db.collection("queueTickets").insertOne(ticket);
+      return ticket;
     } catch (error) {
       // Another customer took this number at the same moment; try the next one.
       if (error.code !== 11000 || attempt >= 5) throw error;
     }
   }
+}
 
-  const barbers = await availableBarbers(db);
-  const estimate = await estimatedMinutes(db, barbers.length, number);
+// The chosen service (required) and preferred barber (optional) for a new ticket.
+async function readOrder(db, body) {
+  const serviceId = toObjectId(body.serviceId);
+  const service = serviceId && await db.collection("services").findOne({ _id: serviceId, active: { $ne: false } });
+  if (!service) return { error: "Please select a service." };
 
-  res.cookie("queueTicket", String(result.insertedId), ticketCookie);
+  const fields = {
+    serviceId: service._id,
+    service: service.name,
+    price: service.price,
+    durationMinutes: service.durationMinutes,
+    preferredBarberId: null,
+    preferredBarberName: null
+  };
 
-  res.status(201).json({
-    id: String(result.insertedId),
-    queueNumber: number,
-    service,
-    status: "waiting",
-    estimatedMinutes: estimate,
-    availableBarbers: barbers.map(b => ({
-      id: String(b._id),
-      name: b.name
-    }))
-  });
-});
+  if (body.preferredBarberId) {
+    const barberId = toObjectId(body.preferredBarberId);
+    const barber = barberId && await db.collection("barbers").findOne({ _id: barberId, active: true });
+    if (!barber) return { error: "That barber is not available. Choose another barber or any barber." };
 
-// The customer's own ticket for today, identified by the cookie set when they joined.
-router.get("/mine", async (req, res) => {
+    fields.preferredBarberId = barber._id;
+    fields.preferredBarberName = barber.name;
+  }
+
+  return { fields };
+}
+
+// A signed-in customer's ticket, or the one this device joined with as a guest.
+function ownTicketFilter(req) {
+  if (req.user?.role === "customer") return { customerId: req.user._id, queueDate: todayKey() };
+
+  const id = toObjectId(req.signedCookies.queueTicket);
+  return id ? { _id: id, queueDate: todayKey() } : null;
+}
+
+async function findOwnTicket(db, req) {
+  const filter = ownTicketFilter(req);
+  if (!filter) return null;
+
+  return db.collection("queueTickets").find(filter).sort({ createdAt: -1 }).limit(1).next();
+}
+
+// A barber who is on duty and not already serving someone.
+async function freeBarber(db, barberIdValue) {
+  const barberId = toObjectId(barberIdValue);
+  const barber = barberId && await db.collection("barbers").findOne({ _id: barberId, active: true });
+
+  if (!barber) return { status: 400, error: "Choose a barber." };
+  if (!barber.available) return { status: 409, error: `${barber.name} is marked unavailable.` };
+
+  const serving = await db.collection("queueTickets").findOne({ queueDate: todayKey(), barberId, status: "serving" });
+  if (serving) {
+    return { status: 409, error: `${barber.name} is still serving #${serving.queueNumber}. Complete that customer first.` };
+  }
+
+  return { barber };
+}
+
+function callFields(barber, user) {
+  return {
+    status: "serving",
+    barberId: barber._id,
+    barberName: barber.name,
+    calledAt: new Date(),
+    calledBy: user._id
+  };
+}
+
+async function callTicket(res, db, filter, barber, user, notFound) {
+  try {
+    const ticket = await db.collection("queueTickets").findOneAndUpdate(
+      filter,
+      { $set: callFields(barber, user) },
+      { sort: { queueNumber: 1 }, returnDocument: "after" }
+    );
+
+    if (!ticket) return res.status(404).json({ error: notFound });
+    res.json(ticketView(ticket));
+  } catch (error) {
+    // The unique index allows only one customer being served per barber.
+    if (error.code === 11000) return res.status(409).json({ error: `${barber.name} is already serving a customer.` });
+    throw error;
+  }
+}
+
+// ---------- Customers ----------
+
+// Join the queue, signed in or as a guest.
+router.post("/", optionalAuth, async (req, res) => {
   const db = req.app.locals.db;
-  const ticketId = req.signedCookies.queueTicket;
-  const notQueued = { error: "You have not joined today's queue." };
 
-  if (!ticketId || !ObjectId.isValid(ticketId)) return res.status(404).json(notQueued);
+  if (req.user && req.user.role !== "customer") {
+    return res.status(400).json({ error: "Staff add customers from the front desk." });
+  }
 
-  const ticket = await db.collection("queueTickets").findOne({
-    _id: new ObjectId(ticketId),
-    queueDate: todayKey()
+  const isAccount = req.user?.role === "customer";
+  const name = isAccount ? req.user.name : cleanText(req.body.name, 60);
+  if (!validName(name)) return res.status(400).json({ error: "Enter your name (2 to 60 characters)." });
+
+  const existing = await findOwnTicket(db, req);
+  if (existing && ACTIVE.includes(existing.status)) {
+    return res.status(409).json({ error: "You are already in today's queue." });
+  }
+
+  const { fields, error } = await readOrder(db, req.body);
+  if (error) return res.status(400).json({ error });
+
+  const ticket = await createTicket(db, {
+    ...fields,
+    customerName: name,
+    customerId: isAccount ? req.user._id : null,
+    source: isAccount ? "account" : "guest"
   });
 
-  if (!ticket || ticket.status === "cancelled") return res.status(404).json(notQueued);
+  if (!isAccount) res.cookie("queueTicket", String(ticket._id), ticketCookie);
 
-  const barbers = await availableBarbers(db);
-  const estimate = WAITING.includes(ticket.status)
-    ? await estimatedMinutes(db, barbers.length, ticket.queueNumber)
-    : 0;
-
-  res.json({
-    ticket: {
-      id: String(ticket._id),
-      queueNumber: ticket.queueNumber,
-      customerName: ticket.customerName,
-      service: ticket.service,
-      barberName: ticket.barberName || null,
-      status: ticket.status,
-      estimatedMinutes: estimate
-    }
-  });
+  res.status(201).json({ ticket: { ...ticketView(ticket), ...await waitEstimate(db, ticket.queueNumber) } });
 });
 
-router.get("/public", async (req, res) => {
+router.get("/mine", optionalAuth, async (req, res) => {
+  const db = req.app.locals.db;
+  const ticket = await findOwnTicket(db, req);
+
+  if (!ticket || ticket.status === "cancelled") {
+    return res.status(404).json({ error: "You have not joined today's queue." });
+  }
+
+  const estimate = WAITING.includes(ticket.status)
+    ? await waitEstimate(db, ticket.queueNumber)
+    : { peopleAhead: 0, estimatedMinutes: 0 };
+
+  const rated = ticket.status === "completed"
+    && Boolean(await db.collection("barberRatings").findOne({ queueTicketId: ticket._id }));
+
+  res.json({ ticket: { ...ticketView(ticket), ...estimate, rated } });
+});
+
+router.post("/mine/leave", optionalAuth, async (req, res) => {
+  const db = req.app.locals.db;
+  const filter = ownTicketFilter(req);
+  if (!filter) return res.status(404).json({ error: "You have not joined today's queue." });
+
+  const ticket = await db.collection("queueTickets").findOneAndUpdate(
+    { ...filter, status: { $in: WAITING } },
+    { $set: { status: "cancelled", endedAt: new Date() } },
+    { sort: { createdAt: -1 } }
+  );
+
+  if (!ticket) return res.status(409).json({ error: "You are not waiting in the queue." });
+  res.json({ message: "You have left the queue." });
+});
+
+// Past visits for customers with an account.
+router.get("/history", requireAuth, requireRole("customer"), async (req, res) => {
   const db = req.app.locals.db;
   const tickets = await db.collection("queueTickets")
-    .find({ queueDate: todayKey(), status: { $in: WAITING } })
-    .sort({ queueNumber: 1 })
+    .find({ customerId: req.user._id })
+    .sort({ createdAt: -1 })
+    .limit(50)
     .toArray();
 
-  const barbers = await db.collection("barbers").find({ active: true }).toArray();
+  const ratings = await db.collection("barberRatings")
+    .find({ queueTicketId: { $in: tickets.map(t => t._id) } }, { projection: { queueTicketId: 1 } })
+    .toArray();
+  const rated = new Set(ratings.map(r => String(r.queueTicketId)));
 
-  const availableCount = barbers.filter(b => b.available).length;
-  const estimate = await estimatedMinutes(db, availableCount);
-
-  res.json({
-    waiting: tickets.map(t => ({
-      id: String(t._id),
-      queueNumber: t.queueNumber,
-      customerName: t.customerName,
-      service: t.service,
-      barberId: t.barberId
-    })),
-    availableBarbers: barbers.filter(b => b.available).map(b => ({
-      id: String(b._id),
-      name: b.name
-    })),
-    estimatedMinutes: estimate
-  });
+  res.json(tickets.map(t => ({ ...ticketView(t), queueDate: t.queueDate, rated: rated.has(String(t._id)) })));
 });
 
-router.post("/:id/select-barber", async (req, res) => {
-  const db = req.app.locals.db;
-
-  if (!ObjectId.isValid(req.params.id) || !ObjectId.isValid(req.body.barberId)) {
-    return res.status(400).json({ error: "Invalid ticket or barber." });
-  }
-
-  // Customers can only choose a barber for their own ticket.
-  if (req.signedCookies.queueTicket !== req.params.id) {
-    return res.status(403).json({ error: "You can only update your own queue ticket." });
-  }
-
-  const ticketId = new ObjectId(req.params.id);
-  const barberId = new ObjectId(req.body.barberId);
-
-  const barber = await db.collection("barbers").findOne({
-    _id: barberId,
-    active: true,
-    available: true
-  });
-
-  if (!barber) return res.status(409).json({ error: "That barber is no longer available." });
-
-  const result = await db.collection("queueTickets").updateOne(
-    { _id: ticketId, status: "waiting" },
-    { $set: { barberId, barberName: barber.name, status: "assigned" } }
-  );
-
-  if (!result.modifiedCount) {
-    return res.status(409).json({ error: "Queue ticket is no longer waiting." });
-  }
-
-  await db.collection("barbers").updateOne(
-    { _id: barberId },
-    { $set: { available: false } }
-  );
-
-  res.json({ message: `You selected ${barber.name}. Please wait for your number to be called.` });
-});
-
-router.get("/", requireAuth, requireRole("admin", "staff"), async (req, res) => {
+// The queue screen shown in the shop: numbers and short names only.
+router.get("/public", async (req, res) => {
   const db = req.app.locals.db;
   const tickets = await db.collection("queueTickets")
     .find({ queueDate: todayKey(), status: { $in: ACTIVE } })
     .sort({ queueNumber: 1 })
     .toArray();
 
-  res.json(tickets.map(t => ({
-    id: String(t._id),
-    queueNumber: t.queueNumber,
-    customerName: t.customerName,
-    service: t.service,
-    barberName: t.barberName || "Not selected",
-    status: t.status,
-    createdAt: t.createdAt
-  })));
-});
-
-router.post("/call-next", requireAuth, requireRole("admin", "staff"), async (req, res) => {
-  const db = req.app.locals.db;
-
-  const next = await db.collection("queueTickets").findOne(
-    { queueDate: todayKey(), status: { $in: WAITING } },
-    { sort: { queueNumber: 1 } }
-  );
-
-  if (!next) return res.status(404).json({ error: "No waiting customers." });
-
-  if (next.barberId) {
-    await db.collection("barbers").updateOne(
-      { _id: next.barberId },
-      { $set: { available: false } }
-    );
-  }
-
-  await db.collection("queueTickets").updateOne(
-    { _id: next._id },
-    { $set: { status: "serving", calledAt: new Date() } }
-  );
-
   res.json({
-    id: String(next._id),
-    queueNumber: next.queueNumber,
-    customerName: next.customerName,
-    barberName: next.barberName || "Any available barber"
+    serving: tickets.filter(t => t.status === "serving").map(t => ({
+      queueNumber: t.queueNumber,
+      name: shortName(t.customerName),
+      barberName: t.barberName
+    })),
+    waiting: tickets.filter(t => WAITING.includes(t.status)).map(t => ({
+      queueNumber: t.queueNumber,
+      name: shortName(t.customerName),
+      service: t.service
+    })),
+    estimatedMinutes: (await waitEstimate(db)).estimatedMinutes
   });
 });
 
-router.post("/:id/complete", requireAuth, requireRole("admin", "staff"), async (req, res) => {
+// ---------- Front desk (cashier and admin) ----------
+
+router.get("/", ...staffOnly, async (req, res) => {
+  const tickets = await req.app.locals.db.collection("queueTickets")
+    .find({ queueDate: todayKey() })
+    .sort({ queueNumber: 1 })
+    .toArray();
+
+  res.json(tickets.map(ticketView));
+});
+
+// Add a walk-in customer, optionally linked to their account by email.
+router.post("/walk-in", ...staffOnly, async (req, res) => {
   const db = req.app.locals.db;
+  const email = cleanText(req.body.customerEmail, 254).toLowerCase();
+  let customer = null;
 
-  if (!ObjectId.isValid(req.params.id)) return res.status(400).json({ error: "Invalid ticket ID." });
+  if (email) {
+    customer = await db.collection("users").findOne({ email, role: "customer", active: { $ne: false } });
+    if (!customer) return res.status(404).json({ error: "No customer account uses that email." });
 
-  const id = new ObjectId(req.params.id);
-  const ticket = await db.collection("queueTickets").findOne({ _id: id });
-
-  if (!ticket) return res.status(404).json({ error: "Ticket not found." });
-
-  await db.collection("queueTickets").updateOne(
-    { _id: id },
-    { $set: { status: "completed", completedAt: new Date() } }
-  );
-
-  if (ticket.barberId) {
-    await db.collection("barbers").updateOne(
-      { _id: ticket.barberId },
-      { $set: { available: true } }
-    );
+    const active = await db.collection("queueTickets").findOne({
+      customerId: customer._id,
+      queueDate: todayKey(),
+      status: { $in: ACTIVE }
+    });
+    if (active) return res.status(409).json({ error: `${customer.name} is already in the queue as #${active.queueNumber}.` });
   }
 
-  res.json({ message: "Customer completed." });
+  const customerName = customer ? customer.name : cleanText(req.body.name, 60);
+  if (!validName(customerName)) return res.status(400).json({ error: "Enter the customer's name (2 to 60 characters)." });
+
+  const { fields, error } = await readOrder(db, req.body);
+  if (error) return res.status(400).json({ error });
+
+  const ticket = await createTicket(db, {
+    ...fields,
+    customerName,
+    customerId: customer ? customer._id : null,
+    source: "walk-in",
+    addedBy: req.user._id
+  });
+
+  res.status(201).json(ticketView(ticket));
+});
+
+// Call the next customer for a barber: the first who chose that barber or has no preference.
+router.post("/call-next", ...staffOnly, async (req, res) => {
+  const db = req.app.locals.db;
+  const { barber, status, error } = await freeBarber(db, req.body.barberId);
+  if (error) return res.status(status).json({ error });
+
+  await callTicket(
+    res,
+    db,
+    { queueDate: todayKey(), status: { $in: WAITING }, preferredBarberId: { $in: [barber._id, null] } },
+    barber,
+    req.user,
+    `No customers are waiting for ${barber.name}.`
+  );
+});
+
+// Call a specific customer (for example, out of order) to a barber.
+router.post("/:id/call", ...staffOnly, async (req, res) => {
+  const db = req.app.locals.db;
+  const id = toObjectId(req.params.id);
+  if (!id) return res.status(400).json({ error: "Invalid ticket ID." });
+
+  const { barber, status, error } = await freeBarber(db, req.body.barberId);
+  if (error) return res.status(status).json({ error });
+
+  await callTicket(
+    res,
+    db,
+    { _id: id, queueDate: todayKey(), status: { $in: WAITING } },
+    barber,
+    req.user,
+    "This customer is no longer waiting."
+  );
+});
+
+// Finish a visit and record the payment.
+router.post("/:id/complete", ...staffOnly, async (req, res) => {
+  const db = req.app.locals.db;
+  const id = toObjectId(req.params.id);
+  if (!id) return res.status(400).json({ error: "Invalid ticket ID." });
+
+  const method = String(req.body.method || "").toLowerCase();
+  if (!PAYMENT_METHODS.includes(method)) return res.status(400).json({ error: "Choose a payment method." });
+
+  const current = await db.collection("queueTickets").findOne({ _id: id });
+  if (!current) return res.status(404).json({ error: "Ticket not found." });
+
+  const rawAmount = req.body.amount;
+  const amount = rawAmount === undefined || rawAmount === "" || rawAmount === null ? Number(current.price) : Number(rawAmount);
+  if (!Number.isFinite(amount) || amount < 0 || amount > 100000) return res.status(400).json({ error: "Enter a valid amount." });
+
+  const ticket = await db.collection("queueTickets").findOneAndUpdate(
+    { _id: id, status: "serving" },
+    { $set: { status: "completed", completedAt: new Date(), completedBy: req.user._id } },
+    { returnDocument: "after" }
+  );
+
+  if (!ticket) return res.status(409).json({ error: "Only a customer who is being served can be completed." });
+
+  const payment = {
+    type: "service",
+    ticketId: ticket._id,
+    queueNumber: ticket.queueNumber,
+    customerName: ticket.customerName,
+    customerId: ticket.customerId || null,
+    description: ticket.service,
+    barberId: ticket.barberId,
+    barberName: ticket.barberName,
+    amount: Math.round(amount * 100) / 100,
+    method,
+    note: cleanText(req.body.note, 200),
+    cashierId: req.user._id,
+    cashierName: req.user.name,
+    createdAt: new Date()
+  };
+
+  const result = await db.collection("payments").insertOne(payment);
+  await db.collection("queueTickets").updateOne(
+    { _id: ticket._id },
+    { $set: { paymentId: result.insertedId, amountPaid: payment.amount } }
+  );
+
+  res.json({ message: "Visit completed and payment recorded.", ticket: ticketView({ ...ticket, amountPaid: payment.amount }) });
+});
+
+router.post("/:id/no-show", ...staffOnly, async (req, res) => {
+  const id = toObjectId(req.params.id);
+  if (!id) return res.status(400).json({ error: "Invalid ticket ID." });
+
+  const ticket = await req.app.locals.db.collection("queueTickets").findOneAndUpdate(
+    { _id: id, status: { $in: ACTIVE } },
+    { $set: { status: "no-show", endedAt: new Date() } }
+  );
+
+  if (!ticket) return res.status(409).json({ error: "This customer is no longer in the queue." });
+  res.json({ message: `#${ticket.queueNumber} marked as no-show.` });
+});
+
+router.post("/:id/cancel", ...staffOnly, async (req, res) => {
+  const id = toObjectId(req.params.id);
+  if (!id) return res.status(400).json({ error: "Invalid ticket ID." });
+
+  const ticket = await req.app.locals.db.collection("queueTickets").findOneAndUpdate(
+    { _id: id, status: { $in: WAITING } },
+    { $set: { status: "cancelled", endedAt: new Date() } }
+  );
+
+  if (!ticket) return res.status(409).json({ error: "Only waiting customers can be cancelled." });
+  res.json({ message: `#${ticket.queueNumber} cancelled.` });
 });
 
 router.delete("/", requireAuth, requireRole("admin"), async (req, res) => {
-  const db = req.app.locals.db;
-  const filter = { queueDate: todayKey(), status: { $in: WAITING } };
+  const result = await req.app.locals.db.collection("queueTickets").updateMany(
+    { queueDate: todayKey(), status: { $in: WAITING } },
+    { $set: { status: "cancelled", endedAt: new Date() } }
+  );
 
-  // Barbers chosen by cancelled customers become available again.
-  const barberIds = await db.collection("queueTickets").distinct("barberId", filter);
-  const assigned = barberIds.filter(Boolean);
-
-  await db.collection("queueTickets").updateMany(filter, { $set: { status: "cancelled" } });
-
-  if (assigned.length) {
-    await db.collection("barbers").updateMany(
-      { _id: { $in: assigned } },
-      { $set: { available: true } }
-    );
-  }
-
-  res.json({ message: "Waiting queue cleared." });
+  res.json({ message: `Cleared ${result.modifiedCount} waiting customer(s).` });
 });
 
 module.exports = router;

@@ -5,13 +5,14 @@ const { cleanText, positiveNumber } = require("../utils/validation");
 
 const router = express.Router();
 
-router.get("/", requireAuth, requireRole("admin", "staff"), async (req, res) => {
+router.get("/", requireAuth, requireRole("admin", "cashier"), async (req, res) => {
   const db = req.app.locals.db;
   const items = await db.collection("inventory").find({}).sort({ name: 1 }).toArray();
   res.json(items.map(i => ({
     ...i,
     id: String(i._id),
-    _id: undefined
+    _id: undefined,
+    lowStock: i.quantity <= i.minimumStock
   })));
 });
 
