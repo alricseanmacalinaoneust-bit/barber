@@ -1,0 +1,70 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Login | Renz Barbershop</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <link rel="stylesheet" href="/css/login.css">
+</head>
+
+<body class="login-page">
+  <main class="login-layout">
+    <section class="login-brand">
+      <div class="brand-icon">✂</div>
+      <h1>RENZ<br>BARBERSHOP</h1>
+      <p>Your style. Your turn. Your time.</p>
+      <p>Manage the barbershop or join the queue in just a few steps.</p>
+    </section>
+
+    <section class="login-content">
+      <h2 id="formTitle">Welcome back</h2>
+      <p class="login-subtitle" id="formSubtitle">
+        Sign in to access the admin dashboard.
+      </p>
+
+      <div class="login-tabs">
+        <button class="login-tab active" id="adminTab" type="button">
+          Admin Login
+        </button>
+        <button class="login-tab" id="customerTab" type="button">
+          Customer
+        </button>
+      </div>
+
+      <form id="adminForm" class="login-form">
+        <label for="adminEmail">Admin Email</label>
+        <input id="adminEmail" type="email" autocomplete="username"
+               placeholder="admin@example.com" required>
+
+        <label for="adminPassword">Password</label>
+        <input id="adminPassword" type="password"
+               autocomplete="current-password"
+               placeholder="Enter your password" required>
+
+        <button class="login-submit" type="submit">Sign In as Admin</button>
+      </form>
+
+      <form id="customerForm" class="login-form" hidden>
+        <label for="customerName">Your Name</label>
+        <input id="customerName" type="text" maxlength="60"
+               autocomplete="name" placeholder="Enter your name"
+               required>
+
+        <button class="login-submit" type="submit">Continue to Queue</button>
+      </form>
+
+      <p id="loginMessage" class="login-message" role="status"
+         aria-live="polite"></p>
+
+      <p class="login-note" id="loginNote">
+        Admin access requires your registered account. If MFA is enabled,
+        complete verification after signing in.
+      </p>
+    </section>
+  </main>
+
+  <script src="/js/login.js" defer></script>
+</body>
+</html>

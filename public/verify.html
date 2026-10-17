@@ -1,0 +1,47 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Verify Login | Renz Barbershop</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <link rel="stylesheet" href="/css/login.css">
+</head>
+
+<body class="login-page">
+  <main class="login-layout">
+    <section class="login-brand">
+      <div class="brand-icon">✂</div>
+      <h1>RENZ<br>BARBERSHOP</h1>
+      <p>Your style. Your turn. Your time.</p>
+      <p>Manage the barbershop or join the queue in just a few steps.</p>
+    </section>
+
+    <section class="login-content">
+      <h2>Check your email</h2>
+      <p class="login-subtitle">
+        Enter the 6-digit verification code we sent to your admin email.
+      </p>
+
+      <form id="verifyForm" class="login-form">
+        <label for="verifyCode">Verification Code</label>
+        <input id="verifyCode" type="text" inputmode="numeric"
+               autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6"
+               placeholder="123456" required autofocus>
+
+        <button class="login-submit" type="submit">Verify and Sign In</button>
+      </form>
+
+      <p id="verifyMessage" class="login-message" role="status"
+         aria-live="polite"></p>
+
+      <p class="login-note">
+        The code expires in 10 minutes. <a href="/login.html">Back to login</a>
+      </p>
+    </section>
+  </main>
+
+  <script src="/js/verify.js" defer></script>
+</body>
+</html>

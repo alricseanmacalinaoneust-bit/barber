@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BarberShop Queue Management System</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <script src="https://cdn.jsdelivr.net/npm/lucide@0.468.0/dist/umd/lucide.min.js"></script>
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" id="sidebar">
+      <div class="brand">
+        <div class="brand-mark"><i data-lucide="scissors"></i></div>
+        <div>
+          <strong>BarberShop</strong>
+          <span>Queue System</span>
+        </div>
+      </div>
+
+      <nav class="nav-menu" aria-label="Main navigation">
+        <button class="nav-link" data-page="Dashboard"><i data-lucide="house"></i><span>Dashboard</span></button>
+        <button class="nav-link" data-page="Queue"><i data-lucide="users"></i><span>Queue</span></button>
+        <button class="nav-link" data-page="Customers"><i data-lucide="user-round"></i><span>Customers</span></button>
+        <button class="nav-link" data-page="Barbers"><i data-lucide="scissors"></i><span>Barbers</span></button>
+        <button class="nav-link" data-page="Services"><i data-lucide="clipboard-list"></i><span>Services</span></button>
+        <button class="nav-link" data-page="Inventory"><i data-lucide="package"></i><span>Inventory</span></button>
+        <button class="nav-link active" data-page="Analytics"><i data-lucide="chart-no-axes-column-increasing"></i><span>Analytics</span></button>
+        <button class="nav-link" data-page="Reports"><i data-lucide="file-text"></i><span>Reports</span></button>
+        <button class="nav-link" data-page="Settings"><i data-lucide="settings"></i><span>Settings</span></button>
+      </nav>
+
+      <button class="nav-link logout" id="logoutBtn">
+        <i data-lucide="log-out"></i><span>Logout</span>
+      </button>
+    </aside>
+
+    <main class="main-area">
+      <header class="topbar">
+        <button class="icon-button menu-toggle" id="menuToggle" aria-label="Toggle menu">
+          <i data-lucide="menu"></i>
+        </button>
+
+        <div class="topbar-spacer"></div>
+
+        <button class="icon-button notification-button" id="notificationBtn" aria-label="Notifications">
+          <i data-lucide="bell"></i>
+          <span class="notification-dot"></span>
+        </button>
+
+        <button class="profile-button" id="profileBtn">
+          <span class="avatar admin-avatar">A</span>
+          <span>Admin</span>
+          <i data-lucide="chevron-down"></i>
+        </button>
+
+        <div class="profile-menu hidden" id="profileMenu">
+          <strong>Administrator</strong>
+          <small>System access</small>
+          <button id="profileLogout">Log out</button>
+        </div>
+      </header>
+
+      <section class="page-content">
+        <div class="page-heading">
+          <div>
+            <h1>Analytics</h1>
+            <p>Overview of your barbershop performance and key metrics.</p>
+          </div>
+
+          <label class="date-filter">
+            <i data-lucide="calendar-days"></i>
+            <select id="dateFilter" aria-label="Select analytics date">
+              <option value="today">Today</option>
+              <option value="yesterday">Yesterday</option>
+              <option value="week">This week</option>
+              <option value="month">This month</option>
+            </select>
+            <i data-lucide="chevron-down"></i>
+          </label>
+        </div>
+
+        <div class="metrics-grid">
+          <article class="metric-card">
+            <div class="metric-icon blue"><i data-lucide="users"></i></div>
+            <div class="metric-copy">
+              <span>Total Customers</span>
+              <strong id="totalCustomers">35</strong>
+              <small class="positive">↑ 12% <em>vs. yesterday</em></small>
+            </div>
+          </article>
+
+          <article class="metric-card">
+            <div class="metric-icon green"><i data-lucide="check"></i></div>
+            <div class="metric-copy">
+              <span>Customers Served</span>
+              <strong id="customersServed">30</strong>
+              <small class="positive">↑ 10% <em>vs. yesterday</em></small>
+            </div>
+          </article>
+
+          <article class="metric-card">
+            <div class="metric-icon orange"><i data-lucide="clock-3"></i></div>
+            <div class="metric-copy">
+              <span>Average Wait Time</span>
+              <strong id="averageWait">15 min</strong>
+              <small class="positive">↓ 25% <em>vs. yesterday</em></small>
+            </div>
+          </article>
+
+          <article class="metric-card">
+            <div class="metric-icon purple"><i data-lucide="philippine-peso"></i></div>
+            <div class="metric-copy">
+              <span>Today's Revenue</span>
+              <strong id="revenue">₱3,500</strong>
+              <small class="positive">↑ 18% <em>vs. yesterday</em></small>
+            </div>
+          </article>
+
+          <article class="metric-card">
+            <div class="metric-icon cyan"><i data-lucide="package"></i></div>
+            <div class="metric-copy">
+              <span>Inventory Usage</span>
+              <strong id="inventoryUsage">62%</strong>
+              <small class="positive">↑ 8% <em>vs. yesterday</em></small>
+            </div>
+          </article>
+        </div>
+
+        <div class="charts-grid">
+          <article class="panel customers-chart-panel">
+            <div class="panel-heading">
+              <h2>Customers Throughout the Day</h2>
+              <span class="subtle">Customers</span>
+            </div>
+
+            <div class="bar-chart" role="img" aria-label="Customers throughout the day bar chart">
+              <div class="y-axis">
+                <span>20</span>
+                <span>15</span>
+                <span>10</span>
+                <span>5</span>
+                <span>0</span>
+              </div>
+
+              <div class="plot-area">
+                <div class="grid-lines">
+                  <span></span><span></span><span></span><span></span><span></span>
+                </div>
+                <div class="bars" id="bars"></div>
+              </div>
+            </div>
+          </article>
+
+          <article class="panel services-panel">
+            <div class="panel-heading">
+              <h2>Popular Services</h2>
+              <span class="subtle">By bookings</span>
+            </div>
+
+            <div class="donut-layout">
+              <div class="donut" id="serviceDonut">
+                <div class="donut-center">
+                  <small>Total</small>
+                  <strong id="serviceTotal">30</strong>
+                  <span>Services</span>
+                </div>
+              </div>
+              <div class="legend" id="serviceLegend"></div>
+            </div>
+          </article>
+        </div>
+
+        <div class="bottom-grid">
+          <article class="panel">
+            <div class="panel-heading">
+              <h2>Top Barbers</h2>
+              <button class="text-action" data-action="barbers">View all</button>
+            </div>
+
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr><th>Rank</th><th>Barber</th><th>Customers</th></tr>
+                </thead>
+                <tbody id="barberRows"></tbody>
+              </table>
+            </div>
+          </article>
+
+          <article class="panel">
+            <div class="panel-heading">
+              <h2>Peak Hours</h2>
+              <button class="text-action" id="peakInfo">Details</button>
+            </div>
+            <div class="peak-list" id="peakList"></div>
+          </article>
+
+          <article class="panel">
+            <div class="panel-heading">
+              <h2>Most Sold Inventory Items</h2>
+              <button class="text-action" data-action="inventory">View all</button>
+            </div>
+
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr><th>Product</th><th>Quantity Used/Sold</th></tr>
+                </thead>
+                <tbody id="inventoryRows"></tbody>
+              </table>
+            </div>
+          </article>
+        </div>
+
+        <p class="demo-note">
+          <i data-lucide="info"></i>
+          Sample dashboard data. Connect your backend API to display live system data.
+        </p>
+      </section>
+    </main>
+  </div>
+
+  <div class="toast" id="toast" role="status"></div>
+
+  <script src="/js/script.js" defer></script>
+  <script src="/js/navigation.js" defer></script>
+</body>
+</html>
