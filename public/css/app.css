@@ -659,7 +659,20 @@ footer {
 .status-pill.serving { background: #e3eefc; color: #1e4f91; }
 .status-pill.completed { background: #e0f5e9; color: #187444; }
 .status-pill.no-show { background: #fbe5e5; color: #a52828; }
-.status-pill.cancelled { background: #eeeeec; color: #5d5d58; }
+.status-pill.cancelled, .status-pill.expired { background: #eeeeec; color: #5d5d58; }
+
+.data-table tr.voided td strong { text-decoration: line-through; }
+.void-note { color: #a52828; margin-top: 4px; }
+.data-table tr.alert-row td { background: #fdf3f3; }
+.narrow-text { max-width: 760px; margin: 0 0 16px; }
+
+.account-link { margin-top: 14px; }
+.account-link summary { cursor: pointer; color: #987747; font-size: 14px; font-weight: bold; }
+
+.inline-form { display: grid; gap: 8px; max-width: 360px; }
+.inline-form label { font-weight: bold; font-size: 14px; margin-top: 8px; }
+.inline-form input { padding: 12px; border: 1px solid var(--border); border-radius: 8px; }
+.inline-form .danger-btn { justify-self: start; margin-top: 6px; }
 
 /* Front desk */
 .desk-grid {

@@ -2,6 +2,7 @@ const express = require("express");
 const { ObjectId } = require("mongodb");
 const { requireAuth, requireRole } = require("../middleware/auth");
 const { cleanText, positiveNumber } = require("../utils/validation");
+const { audit } = require("../utils/security");
 
 const router = express.Router();
 
@@ -43,6 +44,7 @@ router.post("/", requireAuth, requireRole("admin"), async (req, res) => {
     createdAt: new Date()
   });
 
+  await audit(req, "inventory.created", { product: name, quantity, price });
   res.status(201).json({ id: String(result.insertedId), ...doc });
 });
 
@@ -76,6 +78,7 @@ router.patch("/:id", requireAuth, requireRole("admin"), async (req, res) => {
     createdAt: new Date()
   });
 
+  await audit(req, "inventory.updated", { product: name, quantityBefore: current.quantity, quantityAfter: quantity, price });
   res.json({ message: "Inventory updated." });
 });
 
@@ -93,6 +96,7 @@ router.delete("/:id", requireAuth, requireRole("admin"), async (req, res) => {
     createdAt: new Date()
   });
 
+  await audit(req, "inventory.deleted", { product: current.name, quantity: current.quantity });
   res.json({ message: "Inventory item deleted." });
 });
 

@@ -10,7 +10,8 @@ require("dotenv").config({ path: path.join(root, ".env"), quiet: true });
 const PORT = 3999;
 const DB_NAME = "barbershop_test";
 const BASE = `http://localhost:${PORT}`;
-const env = { ...process.env, PORT: String(PORT), DB_NAME };
+// A small online-queue cap so the "queue is full" check is quick.
+const env = { ...process.env, PORT: String(PORT), DB_NAME, MAX_ONLINE_WAITING: "5", HOST: "127.0.0.1" };
 
 let failures = 0;
 let checks = 0;
@@ -154,6 +155,22 @@ async function run() {
   r = await admin("GET", "/api/auth/me");
   check("/me says admin", r.json?.user?.role === "admin", r.json);
 
+  section("Remembered admin device");
+  const laptop = client();
+  r = await laptop("POST", "/api/auth/login", { email: env.ADMIN_EMAIL, password: env.ADMIN_PASSWORD });
+  const laptopCode = await waitForCode(secondCode);
+  r = await laptop("POST", "/api/auth/verify-2fa", { code: laptopCode, remember: true });
+  check("Admin verifies and ticks 'remember this device'", r.status === 200, r.json);
+  await laptop("POST", "/api/auth/logout");
+  r = await laptop("POST", "/api/auth/login", { email: env.ADMIN_EMAIL, password: env.ADMIN_PASSWORD });
+  check("Next login on that device skips the code", r.status === 200 && !r.json.requires2FA && r.json.redirectUrl === "/admin.html", r.json);
+  r = await laptop("POST", "/api/auth/login", { email: env.ADMIN_EMAIL, password: "wrong-password" });
+  check("A remembered device still needs the right password", r.status === 401, r.status);
+
+  section("Requests from other websites");
+  r = await fetch(BASE + "/api/queue", { method: "POST", headers: { "Content-Type": "application/json", Origin: "https://evil.example" }, body: "{}" });
+  check("A change sent from another website is blocked", r.status === 403, r.status);
+
   section("Staff accounts");
   r = await admin("POST", "/api/staff", { name: "Test Cashier", email: "cashier.test@example.com", role: "cashier" });
   check("Admin creates a cashier with a one-time password", r.status === 201 && r.json.temporaryPassword, r.json);
@@ -163,6 +180,14 @@ async function run() {
   check("Cashier signs in without a code and goes to the front desk", r.status === 200 && r.json.redirectUrl === "/cashier.html", r.json);
   r = await cashier("GET", "/api/auth/me");
   check("Cashier must change the temporary password", r.json?.user?.mustChangePassword === true, r.json);
+  r = await cashier("GET", "/api/queue");
+  check("Until then, the front desk is blocked", r.status === 403 && r.json.code === "password_change_required", r.json);
+  r = await cashier("POST", "/api/auth/change-password", { currentPassword: cashierPassword, newPassword: "weakpass1" });
+  check("Staff passwords must be strong", r.status === 400, r.json);
+  r = await cashier("POST", "/api/auth/change-password", { currentPassword: cashierPassword, newPassword: "Cashier-Strong-2026!" });
+  check("Cashier sets their own strong password", r.status === 200, r.json);
+  r = await cashier("GET", "/api/queue");
+  check("Now the front desk opens", r.status === 200, r.status);
   r = await cashier("GET", "/api/staff");
   check("Cashier can't manage staff", r.status === 403, r.status);
   r = await cashier("POST", "/api/services", { name: "Hack", price: 1, durationMinutes: 10 });
@@ -171,6 +196,20 @@ async function run() {
   check("Cashier can't see admin analytics", r.status === 403, r.status);
   r = await admin("PATCH", `/api/staff/${(await admin("GET", "/api/staff")).json.find(s => s.isYou).id}`, { active: false });
   check("Admin can't deactivate themselves", r.status === 400, r.json);
+
+  section("Account lock after repeated wrong passwords");
+  r = await admin("POST", "/api/staff", { name: "Lock Test", email: "lock.test@example.com", role: "cashier" });
+  const lockId = r.json.id;
+  const lockPassword = r.json.temporaryPassword;
+  const intruder = client();
+  for (let i = 0; i < 5; i++) await intruder("POST", "/api/auth/login", { email: "lock.test@example.com", password: "guess" + i });
+  r = await intruder("POST", "/api/auth/login", { email: "lock.test@example.com", password: lockPassword });
+  check("After 5 wrong passwords even the right one is refused (locked)", r.status === 429, r.json);
+  r = await admin("POST", `/api/staff/${lockId}/reset-password`);
+  r = await intruder("POST", "/api/auth/login", { email: "lock.test@example.com", password: r.json.temporaryPassword });
+  check("Admin password reset unlocks the account", r.status === 200, r.json);
+  r = await anon("POST", "/api/auth/login", { email: "nobody@example.com", password: "whatever1" });
+  check("Unknown email gets the same answer as a wrong password", r.status === 401 && r.json.error === "Invalid email or password.", r.json);
 
   section("Customer accounts");
   r = await carla("POST", "/api/auth/register", { name: "Carla Santos", email: "carla@example.com", password: "short" });
@@ -238,8 +277,10 @@ async function run() {
   check("Alice completed at the service price", r.status === 200 && r.json.ticket.amountPaid === haircut.price, r.json);
   r = await cashier("POST", `/api/queue/${aliceTicket}/complete`, { method: "cash" });
   check("Can't complete twice", r.status === 409, r.status);
-  r = await cashier("POST", `/api/queue/${carlaTicket}/complete`, { method: "gcash", amount: 180 });
-  check("Carla completed with an adjusted amount", r.json?.ticket?.amountPaid === 180, r.json);
+  r = await cashier("POST", `/api/queue/${carlaTicket}/complete`, { method: "gcash", amount: 50 });
+  check("Charging less than the price needs a reason", r.status === 400 && /reason/.test(r.json.error), r.json);
+  r = await cashier("POST", `/api/queue/${carlaTicket}/complete`, { method: "gcash", amount: 60, note: "Senior citizen discount" });
+  check("Carla completed with a ₱20 discount and a reason", r.json?.ticket?.amountPaid === 60, r.json);
   r = await cashier("POST", `/api/queue/${walterTicket}/no-show`);
   check("Walter marked no-show", r.status === 200, r.json);
   r = await cashier("POST", `/api/queue/${walterTicket}/complete`, { method: "cash" });
@@ -282,8 +323,9 @@ async function run() {
   check("Pomade is now flagged low stock", r.json.find(i => i.id === pomadeId)?.lowStock === true, r.json);
 
   r = await cashier("GET", "/api/payments");
-  const expectedTotal = haircut.price + 180 + 500;
-  check(`Today's payments total ${expectedTotal}`, r.json?.totals?.total === expectedTotal && r.json.totals.byMethod.gcash === 180 && r.json.totals.products === 500, r.json?.totals);
+  const expectedTotal = haircut.price + 60 + 500;
+  check(`Today's payments total ${expectedTotal}, discounts ₱20`, r.json?.totals?.total === expectedTotal && r.json.totals.byMethod.gcash === 60 && r.json.totals.products === 500 && r.json.totals.discounts === 20, r.json?.totals);
+  const pomadeSale = r.json.payments.find(p => p.type === "product");
   r = await cashier("GET", "/api/payments?from=2026-02-30");
   check("Invalid date rejected", r.status === 400, r.status);
 
@@ -296,6 +338,25 @@ async function run() {
   r = await admin("GET", "/api/analytics/inventory-monthly");
   check("Monthly report counts 2 sold this month", r.json?.months?.[new Date().getMonth()]?.sold === 2, r.json?.months);
 
+  section("Voiding a payment");
+  r = await cashier("POST", `/api/payments/${pomadeSale.id}/void`, { reason: "Mistake" });
+  check("A cashier can't void payments", r.status === 403, r.status);
+  r = await admin("POST", `/api/payments/${pomadeSale.id}/void`, {});
+  check("Voiding needs a reason", r.status === 400, r.json);
+  r = await admin("POST", `/api/payments/${pomadeSale.id}/void`, { reason: "Customer returned the pomade" });
+  check("Admin voids the pomade sale", r.status === 200, r.json);
+  r = await admin("POST", `/api/payments/${pomadeSale.id}/void`, { reason: "Again" });
+  check("A payment can't be voided twice", r.status === 409, r.status);
+  r = await cashier("GET", "/api/inventory");
+  check("Voided items go back into stock", r.json.find(i => i.id === pomadeId)?.quantity === 3, r.json);
+  r = await cashier("GET", "/api/payments");
+  check("Voided payment no longer counts in totals", r.json.totals.total === haircut.price + 60 && r.json.totals.voided === 1, r.json.totals);
+
+  section("Guest turns into an account");
+  const ella = client();
+  r = await ella("POST", "/api/queue", { name: "Ella Tan", serviceId: haircut.id, preferredBarberId: barberC.id });
+  check("Guest Ella joins and asks for Barber C", r.status === 201 && r.json.ticket.preferredBarberName === "Barber C", r.json);
+
   section("Managing barbers, reviews and services");
   r = await admin("PATCH", `/api/barbers/${barberC.id}`, { name: "Barber C", specialty: "Fades", experienceYears: 4 });
   check("Admin edits Barber C", r.status === 200, r.json);
@@ -303,8 +364,14 @@ async function run() {
   check("Admin removes Barber C", r.status === 200, r.json);
   r = await anon("GET", "/api/barbers");
   check("Removed barber is hidden from customers", !r.json.some(b => b.name === "Barber C"), r.json.map(b => b.name));
+  r = await ella("GET", "/api/queue/mine");
+  check("Ella, who wanted Barber C, can now be served by anyone", r.json?.ticket?.preferredBarberName === null, r.json);
   r = await admin("PATCH", `/api/barbers/${barberC.id}`, { name: "Barber C", active: true });
   check("Admin restores Barber C", r.status === 200 && (await anon("GET", "/api/barbers")).json.length === 3, r.json);
+  r = await ella("POST", "/api/auth/register", { name: "Ella Tan", email: "ella@example.com", password: "ella12345" });
+  check("Ella decides to create an account", r.status === 201, r.json);
+  r = await ella("GET", "/api/queue/history");
+  check("Her visit from today is now in her account", r.json?.length === 1 && r.json[0].customerName === "Ella Tan", r.json);
   r = await admin("GET", `/api/barbers/${barberA.id}/ratings`);
   check("Admin sees Alice's review", r.json?.length === 1 && r.json[0].comment === "Great cut", r.json);
   r = await admin("DELETE", `/api/barbers/ratings/${r.json[0].id}`);
@@ -320,33 +387,97 @@ async function run() {
 
   section("Customer records");
   r = await cashier("GET", "/api/customers?search=carla");
-  check("Cashier finds Carla with 1 visit and ₱180 spent", r.json?.length === 1 && r.json[0].visits === 1 && r.json[0].spent === 180, r.json);
+  check("Cashier finds Carla with 1 visit and ₱60 spent", r.json?.length === 1 && r.json[0].visits === 1 && r.json[0].spent === 60, r.json);
   r = await cashier("GET", "/api/customers/walk-ins");
   check("Walk-ins list includes Walter", r.json?.some(v => v.customerName === "Walter Cruz"), r.json);
+  r = await cashier("POST", "/api/customers", { name: "Walter Cruz", email: "walter@example.com", ticketId: walterTicket });
+  check("Walter asks for an account; his walk-in visit is added to it", r.status === 201 && r.json.linkedVisit === true, r.json);
+  r = await cashier("GET", `/api/customers/${r.json.id}/visits`);
+  check("Walter's account shows that visit", r.json?.length === 1, r.json);
   r = await cashier("POST", "/api/customers", { name: "Dina Cruz", email: "dina@example.com" });
   check("Cashier creates an account for a customer", r.status === 201 && r.json.temporaryPassword, r.json);
+  const dinaPassword = r.json.temporaryPassword;
   const dina = client();
-  r = await dina("POST", "/api/auth/login", { email: "dina@example.com", password: r.json.temporaryPassword });
+  r = await dina("POST", "/api/auth/login", { email: "dina@example.com", password: dinaPassword });
   check("Customer signs in with the one-time password", r.status === 200 && r.json.redirectUrl === "/dashboard.html", r.json);
   r = await dina("POST", "/api/auth/change-password", { currentPassword: "wrong", newPassword: "dina12345" });
   check("Wrong current password rejected", r.status === 400, r.json);
+  r = await dina("POST", "/api/auth/delete-account", { password: dinaPassword });
+  check("Dina deletes her account", r.status === 200, r.json);
+  r = await dina("POST", "/api/auth/login", { email: "dina@example.com", password: dinaPassword });
+  check("A deleted account can't sign in", r.status === 401, r.status);
+  r = await cashier("GET", "/api/customers?search=dina");
+  check("Deleted account no longer appears in customer records", r.json?.length === 0, r.json);
+
+  section("Changing a password signs out other devices");
+  const carlaPhone = client();
+  r = await carlaPhone("POST", "/api/auth/login", { email: "carla@example.com", password: "carla12345" });
+  check("Carla is also signed in on her phone", r.status === 200, r.json);
+  r = await carla("POST", "/api/auth/change-password", { currentPassword: "carla12345", newPassword: "carla67890" });
+  check("Carla changes her password", r.status === 200, r.json);
+  r = await carla("GET", "/api/auth/me");
+  check("She stays signed in on this device", r.status === 200, r.status);
+  r = await carlaPhone("GET", "/api/auth/me");
+  check("Her phone is signed out", r.status === 401, r.status);
 
   section("Deactivating staff");
   r = await admin("PATCH", `/api/staff/${cashierId}`, { active: false });
   check("Admin deactivates the cashier", r.status === 200, r.json);
   r = await cashier("GET", "/api/auth/me");
   check("Deactivated cashier is signed out immediately", r.status === 401, r.status);
-  r = await cashier("POST", "/api/auth/login", { email: "cashier.test@example.com", password: cashierPassword });
+  r = await cashier("POST", "/api/auth/login", { email: "cashier.test@example.com", password: "Cashier-Strong-2026!" });
   check("Deactivated cashier can't sign in", r.status === 401, r.status);
 
   section("Other");
   r = await anon("POST", "/api/queue", undefined, "{bad json");
   check("Malformed JSON -> 400", r.status === 400, r.status);
   r = await admin("DELETE", "/api/queue");
-  check("Admin clears the waiting queue", r.status === 200 && /Cleared 1/.test(r.json.message), r.json);
+  check("Admin clears the waiting queue (Bob and Ella)", r.status === 200 && /Cleared 2/.test(r.json.message), r.json);
+
+  section("Flooding the queue");
+  let full = null;
+  for (let i = 1; i <= 6; i++) {
+    r = await client()("POST", "/api/queue", { name: `Bot Number${i}`, serviceId: beard.id });
+    if (r.status !== 201) { full = { i, status: r.status, error: r.json?.error }; break; }
+  }
+  check("Online joins stop when the waiting line is full (test cap: 5)", full?.i === 6 && full.status === 503, full);
+  r = await admin("POST", "/api/queue/walk-in", { name: "Real Walk-in", serviceId: beard.id });
+  check("Walk-ins can still be added at the counter when online joins are full", r.status === 201, r.json);
+
+  section("Activity log");
+  r = await admin("GET", "/api/audit?action=login");
+  check("Failed and successful sign-ins are logged", r.json?.some(e => e.action === "login.failed") && r.json.some(e => e.action === "login"), r.json?.map(e => e.action));
+  r = await admin("GET", "/api/audit?action=payment");
+  check("Discounts and voids are logged with reasons",
+    r.json?.some(e => e.action === "payment.discount" && e.details.reason === "Senior citizen discount") && r.json.some(e => e.action === "payment.voided"), r.json);
+  r = await admin("GET", "/api/audit");
+  check("Barber removal, staff changes and account deletion steps are logged",
+    ["barber.removed", "staff.created", "staff.updated", "staff.password-reset", "customer.created", "queue.no-show"].every(a => r.json.some(e => e.action === a)), r.json?.map(e => e.action));
+  r = await carla("GET", "/api/audit");
+  check("Customers can't read the activity log", r.status === 403, r.status);
+
   r = await admin("POST", "/api/auth/logout");
   r = await admin("GET", "/api/auth/me");
   check("Admin logged out", r.status === 401, r.status);
+}
+
+// Tickets from earlier days should be closed when the server starts.
+async function addStaleTicket() {
+  const mongo = new MongoClient(env.MONGODB_URI);
+  await mongo.connect();
+  await mongo.db(DB_NAME).collection("queueTickets").insertOne({
+    queueDate: "2020-01-01", queueNumber: 1, customerName: "Old Ticket", service: "Haircut",
+    status: "waiting", createdAt: new Date("2020-01-01T09:00:00")
+  });
+  await mongo.close();
+}
+
+async function staleTicketStatus() {
+  const mongo = new MongoClient(env.MONGODB_URI);
+  await mongo.connect();
+  const ticket = await mongo.db(DB_NAME).collection("queueTickets").findOne({ customerName: "Old Ticket" });
+  await mongo.close();
+  return ticket?.status;
 }
 
 (async () => {
@@ -356,7 +487,12 @@ async function run() {
     const seed = spawnSync(process.execPath, ["seed.js"], { cwd: root, env, encoding: "utf8" });
     if (seed.status !== 0) throw new Error("Seeding failed:\n" + seed.stderr + seed.stdout);
 
+    await addStaleTicket();
     server = await startServer();
+
+    section("Start-up clean-up");
+    check("A ticket left open from an earlier day is closed as expired", await staleTicketStatus() === "expired");
+
     await run();
   } catch (error) {
     failures++;

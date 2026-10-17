@@ -7,7 +7,9 @@
     "start": "node server.js",
     "dev": "node --watch server.js",
     "seed": "node seed.js",
-    "test": "node tests/smoke.js"
+    "test": "node tests/smoke.js",
+    "backup": "node scripts/backup.js",
+    "restore": "node scripts/restore.js"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",

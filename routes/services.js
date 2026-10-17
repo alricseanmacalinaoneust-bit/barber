@@ -1,6 +1,7 @@
 const express = require("express");
 const { requireAuth, requireRole } = require("../middleware/auth");
 const { cleanText, validName, toObjectId } = require("../utils/validation");
+const { audit } = require("../utils/security");
 
 const router = express.Router();
 
@@ -52,6 +53,7 @@ router.post("/", requireAuth, requireRole("admin"), async (req, res) => {
 
   try {
     const result = await req.app.locals.db.collection("services").insertOne(service);
+    await audit(req, "service.created", { service: service.name, price: service.price });
     res.status(201).json(serviceView({ _id: result.insertedId, ...service }));
   } catch (err) {
     if (err.code === 11000) {
@@ -78,6 +80,7 @@ router.patch("/:id", requireAuth, requireRole("admin"), async (req, res) => {
     );
 
     if (!result) return res.status(404).json({ error: "Service not found." });
+    await audit(req, "service.updated", { service: result.name, price: result.price, durationMinutes: result.durationMinutes, active: result.active !== false });
     res.json(serviceView(result));
   } catch (err) {
     if (err.code === 11000) return res.status(409).json({ error: "A service with this name already exists." });
@@ -96,6 +99,7 @@ router.delete("/:id", requireAuth, requireRole("admin"), async (req, res) => {
   );
 
   if (!result.matchedCount) return res.status(404).json({ error: "Service not found." });
+  await audit(req, "service.hidden", { serviceId: String(id) });
   res.json({ message: "Service hidden from customers." });
 });
 

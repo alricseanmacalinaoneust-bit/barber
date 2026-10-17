@@ -33,7 +33,7 @@ router.get("/summary", async (req, res) => {
   const [start, end] = RANGES[range]();
 
   const tickets = await db.collection("queueTickets").find({ createdAt: { $gte: start, $lt: end } }).toArray();
-  const payments = await db.collection("payments").find({ createdAt: { $gte: start, $lt: end } }).toArray();
+  const payments = await db.collection("payments").find({ createdAt: { $gte: start, $lt: end }, voided: { $ne: true } }).toArray();
 
   const completed = tickets.filter(t => t.status === "completed");
   const called = tickets.filter(t => t.calledAt);
@@ -93,6 +93,7 @@ router.get("/summary", async (req, res) => {
       revenue,
       serviceRevenue: payments.filter(p => p.type !== "product").reduce((sum, p) => sum + p.amount, 0),
       productRevenue: payments.filter(p => p.type === "product").reduce((sum, p) => sum + p.amount, 0),
+      discounts: payments.reduce((sum, p) => sum + (p.discount || 0), 0),
       lowStockItems
     },
     customersPerHour,

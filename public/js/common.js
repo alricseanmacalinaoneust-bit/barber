@@ -2,11 +2,15 @@
 (function () {
   const HOME_PAGES = { admin: "/admin.html", cashier: "/cashier.html", customer: "/dashboard.html" };
 
+  // Shared page state: whether the signed-in staff member still has a one-time password.
+  const state = { mustChangePassword: false };
+
   const STATUS_LABELS = {
     waiting: "Waiting",
     serving: "Being served",
     completed: "Completed",
     "no-show": "No-show",
+    expired: "Expired",
     cancelled: "Cancelled"
   };
 
@@ -171,7 +175,9 @@
 
   function downloadCSV(filename, rows) {
     const csv = rows.map(row => row.map(cell => {
-      const text = String(cell ?? "");
+      let text = String(cell ?? "");
+      // Stop Excel from running text like "=HYPERLINK(...)" in a customer name as a formula.
+      if (/^[=+\-@\t\r]/.test(text)) text = "'" + text;
       return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
     }).join(",")).join("\r\n");
 
@@ -205,6 +211,7 @@
 
       document.getElementById("userGreeting").textContent = `Hi, ${user.name}`;
       document.getElementById("passwordBanner")?.classList.toggle("hidden", !user.mustChangePassword);
+      state.mustChangePassword = user.mustChangePassword;
       return user;
     } catch (error) {
       if (error.status === 401) window.location.replace("/login.html");
@@ -222,7 +229,9 @@
     let cleanup = null;
 
     async function open(requested) {
-      const key = pages[requested] ? requested : initial;
+      // Staff with a one-time password must change it before using other pages.
+      const allowed = state.mustChangePassword && pages.account ? "account" : requested;
+      const key = pages[allowed] ? allowed : initial;
       const page = pages[key];
 
       if (typeof cleanup === "function") cleanup();
@@ -286,6 +295,7 @@
     downloadCSV,
     logout,
     requireStaff,
-    mountPages
+    mountPages,
+    state
   };
 })();

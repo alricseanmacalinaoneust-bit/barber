@@ -14,13 +14,13 @@
       title: "Payments",
       eyebrow: "FINANCE",
       description: "Today's sales by payment method, product sales, and past days.",
-      render: Desk.payments
+      render: (body, actions) => Desk.payments(body, actions, user)
     },
     customers: {
       title: "Customers",
       eyebrow: "CUSTOMER RECORDS",
       description: "Customer accounts and walk-in visits.",
-      render: Desk.customers
+      render: (body, actions) => Desk.customers(body, actions, user)
     },
     account: {
       title: "My Account",

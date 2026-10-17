@@ -26,16 +26,14 @@
       </div>
 
       <div id="customerPanel">
-        <div class="login-subtabs" role="tablist">
-          <button class="login-subtab active" type="button" data-form="guestForm">Walk-in guest</button>
-          <button class="login-subtab" type="button" data-form="customerLoginForm">Sign in</button>
-          <button class="login-subtab" type="button" data-form="registerForm">Create account</button>
-        </div>
-
         <form id="guestForm" class="login-form">
           <label for="guestName">Your Name</label>
           <input id="guestName" type="text" minlength="2" maxlength="60" autocomplete="name" placeholder="Enter your name" required>
-          <button class="login-submit" type="submit">Continue to Queue</button>
+          <button class="login-submit" type="submit">Join the Queue</button>
+          <p class="login-alt">
+            No account needed. Have one?
+            <button class="link-btn" type="button" data-form="customerLoginForm">Sign in</button>
+          </p>
         </form>
 
         <form id="customerLoginForm" class="login-form" hidden>
@@ -44,6 +42,10 @@
           <label for="customerPassword">Password</label>
           <input id="customerPassword" type="password" autocomplete="current-password" placeholder="Enter your password" required>
           <button class="login-submit" type="submit">Sign In</button>
+          <p class="login-alt">
+            <button class="link-btn" type="button" data-form="guestForm">← Join without an account</button> ·
+            <button class="link-btn" type="button" data-form="registerForm">Create an account</button>
+          </p>
         </form>
 
         <form id="registerForm" class="login-form" hidden>
@@ -56,6 +58,9 @@
           <label for="registerPassword">Password</label>
           <input id="registerPassword" type="password" minlength="8" autocomplete="new-password" placeholder="At least 8 characters, letters and numbers" required>
           <button class="login-submit" type="submit">Create Account</button>
+          <p class="login-alt">
+            <button class="link-btn" type="button" data-form="guestForm">← Join without an account</button>
+          </p>
         </form>
       </div>
 

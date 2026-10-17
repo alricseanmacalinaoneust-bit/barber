@@ -6,9 +6,24 @@ process.env.TZ = process.env.TZ || "Asia/Manila";
 
 const express = require("express");
 const helmet = require("helmet");
+const rateLimit = require("express-rate-limit");
 const cookieParser = require("cookie-parser");
 const { MongoClient } = require("mongodb");
 
+for (const name of ["MONGODB_URI", "JWT_SECRET"]) {
+  if (!process.env[name]) {
+    console.error(`Missing ${name} in .env`);
+    process.exit(1);
+  }
+}
+
+if (process.env.JWT_SECRET.length < 32) {
+  console.error("JWT_SECRET in .env is too short. Use at least 32 random characters.");
+  process.exit(1);
+}
+
+const { deriveKey } = require("./utils/security");
+const { closeStaleTickets } = require("./utils/maintenance");
 const authRoutes = require("./routes/auth");
 const queueRoutes = require("./routes/queue");
 const barberRoutes = require("./routes/barbers");
@@ -18,17 +33,16 @@ const customerRoutes = require("./routes/customers");
 const staffRoutes = require("./routes/staff");
 const inventoryRoutes = require("./routes/inventory");
 const analyticsRoutes = require("./routes/analytics");
-
-for (const name of ["MONGODB_URI", "JWT_SECRET"]) {
-  if (!process.env[name]) {
-    console.error(`Missing ${name} in .env`);
-    process.exit(1);
-  }
-}
+const auditRoutes = require("./routes/audit");
 
 const PORT = Number(process.env.PORT || 3000);
+// Only this computer can open the site unless HOST is set (for example HOST=0.0.0.0 for phones on the shop Wi-Fi).
+const HOST = process.env.HOST || "127.0.0.1";
 const production = process.env.NODE_ENV === "production";
 const app = express();
+
+// Behind a hosting proxy (Render, Nginx, ...) set TRUST_PROXY=1 so rate limits see each visitor's real address.
+if (process.env.TRUST_PROXY) app.set("trust proxy", Number(process.env.TRUST_PROXY) || process.env.TRUST_PROXY);
 
 // Security headers. Barber photos may come from any https address.
 app.use(helmet({
@@ -42,11 +56,36 @@ app.use(helmet({
 }));
 
 app.use(express.json({ limit: "20kb" }));
-// The secret enables signed cookies (used for the 2FA step and guest queue tickets).
-app.use(cookieParser(process.env.JWT_SECRET));
+app.use(cookieParser(deriveKey("signed-cookies")));
 
 app.get("/", (req, res) => res.redirect("/login.html"));
 app.use(express.static(path.join(__dirname, "public"), { index: false }));
+
+// Overall limit per address, well above what the pages need (they refresh every few seconds,
+// and many phones on the shop Wi-Fi share one address).
+app.use("/api", rateLimit({
+  windowMs: 60 * 1000,
+  limit: 600,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many requests. Please slow down." }
+}));
+
+// Blocks changes sent from other websites (extra protection on top of SameSite cookies).
+app.use("/api", (req, res, next) => {
+  if (["GET", "HEAD", "OPTIONS"].includes(req.method)) return next();
+
+  const origin = req.get("origin");
+  if (!origin) return next();
+
+  try {
+    if (new URL(origin).host === req.get("host")) return next();
+  } catch {
+    // "null" or malformed origins are rejected below.
+  }
+
+  res.status(403).json({ error: "This request was blocked." });
+});
 
 app.use("/api/auth", authRoutes);
 app.use("/api/queue", queueRoutes);
@@ -57,6 +96,7 @@ app.use("/api/customers", customerRoutes);
 app.use("/api/staff", staffRoutes);
 app.use("/api/inventory", inventoryRoutes);
 app.use("/api/analytics", analyticsRoutes);
+app.use("/api/audit", auditRoutes);
 
 app.use("/api", (req, res) => {
   res.status(404).json({ error: "API route not found." });
@@ -91,14 +131,22 @@ async function start() {
     ),
     db.collection("barberRatings").createIndex({ queueTicketId: 1 }, { unique: true }),
     db.collection("payments").createIndex({ createdAt: -1 }),
+    db.collection("auditLogs").createIndex({ at: -1 }),
+    db.collection("trustedDevices").createIndex({ userId: 1, tokenHash: 1 }),
+    db.collection("trustedDevices").createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
     db.collection("loginChallenges").createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 })
   ]);
 
   app.locals.db = db;
 
-  app.listen(PORT, () => {
+  const closed = await closeStaleTickets(db);
+  if (closed) console.log(`Closed ${closed} ticket(s) left open from earlier days.`);
+  setInterval(() => closeStaleTickets(db).catch(error => console.error("Ticket clean-up failed:", error.message)), 60 * 60 * 1000);
+
+  app.listen(PORT, HOST, () => {
     console.log(`Connected to MongoDB database "${db.databaseName}" (time zone ${process.env.TZ}).`);
-    console.log(`Server running at http://localhost:${PORT}`);
+    console.log(`Server running at http://localhost:${PORT}${HOST === "127.0.0.1" ? " (this computer only)" : ` (listening on ${HOST})`}`);
+    if (!production) console.log("Development mode: cookies work over plain http. Set NODE_ENV=production when hosting over HTTPS.");
   });
 }
 

@@ -87,29 +87,26 @@ body.login-page {
   box-shadow: 0 2px 8px #00000012;
 }
 
-.login-subtabs {
+.login-alt {
+  margin: 16px 0 0;
+  color: #777;
+  font-size: 14px;
+  text-align: center;
+}
+
+.login-form .remember-row {
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin: -8px 0 6px;
-}
-
-.login-subtab {
-  padding: 7px 12px;
-  border: 1px solid #e2e0da;
-  border-radius: 20px;
-  background: white;
-  color: #666;
+  align-items: flex-start;
+  gap: 8px;
+  font-weight: normal;
   font-size: 13px;
-  cursor: pointer;
+  line-height: 1.4;
+  color: #555;
 }
 
-.login-subtab.active {
-  border-color: #8a7652;
-  background: #f6f1e7;
-  color: #222;
-  font-weight: bold;
-}
+.login-form .remember-row input { width: auto; margin: 2px 0 0; padding: 0; flex-shrink: 0; }
+
+.login-note a { color: #8a7652; font-weight: bold; }
 
 .link-btn {
   border: 0;

@@ -26,6 +26,7 @@
       <button class="nav-link" data-page="barbers" type="button"><span>✂</span> Barbers</button>
       <button class="nav-link" data-page="rating" type="button"><span>★</span> Rate a Barber</button>
       <button class="nav-link" data-page="visits" type="button"><span>☰</span> My Visits</button>
+      <button class="nav-link hidden" data-page="account" type="button" id="accountNav"><span>⚙</span> My Account</button>
       <button class="nav-link" id="sidebarLogout" type="button"><span>↪</span> Log Out</button>
     </nav>
 
@@ -39,6 +40,10 @@
       <h2 id="pageTitle">Customer Dashboard</h2>
       <span class="greeting" id="customerGreeting">Hi</span>
     </header>
+
+    <div class="banner hidden" id="passwordBanner">
+      You're using a one-time password from the shop. <button class="text-btn" type="button" id="changePasswordLink">Change it now</button>
+    </div>
 
     <div class="turn-alert hidden" id="turnAlert" role="alert">
       <span>✂ It's your turn! Please proceed to <strong id="turnBarber">your barber</strong>.</span>
@@ -175,12 +180,19 @@
         <h1>My Visits</h1>
         <div id="visitsContent" class="spaced"></div>
       </section>
+
+      <section class="page-section" id="accountPage" hidden>
+        <div class="eyebrow">YOUR ACCOUNT</div>
+        <h1>My Account</h1>
+        <div id="accountContent" class="spaced"></div>
+      </section>
     </main>
 
     <footer>RENZ BARBERSHOP | YOUR STYLE. YOUR TURN. YOUR TIME.</footer>
   </div>
 
   <script src="/js/common.js"></script>
+  <script src="/js/desk.js"></script>
   <script src="/js/dashboard.js"></script>
 </body>
 </html>

@@ -530,15 +530,96 @@
     await load();
   }
 
+  // ---------- Activity log ----------
+
+  const ACTION_LABELS = {
+    "login": "Signed in",
+    "login.failed": "Failed sign-in",
+    "login.code-failed": "Wrong email code",
+    "password.changed": "Changed password",
+    "sessions.ended": "Signed out other devices",
+    "payment.discount": "Gave a discount",
+    "payment.voided": "Voided a payment",
+    "queue.no-show": "Marked a no-show",
+    "queue.cancelled": "Cancelled a customer",
+    "queue.cleared": "Cleared the queue",
+    "customer.created": "Created a customer account",
+    "customer.password-reset": "Reset a customer password",
+    "customer.activated": "Activated a customer",
+    "customer.deactivated": "Deactivated a customer",
+    "staff.created": "Added staff",
+    "staff.updated": "Changed staff account",
+    "staff.password-reset": "Reset a staff password",
+    "barber.removed": "Removed a barber",
+    "barber.restored": "Restored a barber",
+    "review.deleted": "Deleted a review",
+    "service.created": "Added a service",
+    "service.updated": "Changed a service",
+    "service.hidden": "Hid a service",
+    "inventory.created": "Added a product",
+    "inventory.updated": "Changed a product",
+    "inventory.deleted": "Deleted a product"
+  };
+
+  function detailsText(details) {
+    return Object.entries(details || {})
+      .filter(([, value]) => value !== null && value !== undefined && value !== "")
+      .map(([key, value]) => `${key}: ${typeof value === "object" ? JSON.stringify(value) : value}`)
+      .join(" · ");
+  }
+
+  async function activity(body, actions) {
+    actions.innerHTML = `
+      <select class="select-input" id="activityFilter" aria-label="Filter activity">
+        <option value="">All activity</option>
+        <option value="login">Sign-ins (incl. failed)</option>
+        <option value="payment">Discounts and voids</option>
+        <option value="queue">No-shows and cancellations</option>
+        <option value="staff">Staff accounts</option>
+        <option value="customer">Customer accounts</option>
+        <option value="inventory">Inventory</option>
+      </select>`;
+
+    body.innerHTML = `
+      <article class="card">
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead><tr><th>When</th><th>Who</th><th>What</th><th>Details</th></tr></thead>
+            <tbody id="activityRows"></tbody>
+          </table>
+        </div>
+      </article>
+      <p class="muted small spaced">Shows the latest 300 entries. Repeated failed sign-ins lock the account for 15 minutes.</p>`;
+
+    const filter = actions.querySelector("#activityFilter");
+
+    async function load() {
+      const entries = await api(`/api/audit?action=${encodeURIComponent(filter.value)}`);
+      body.querySelector("#activityRows").innerHTML = entries.length ? entries.map(e => `
+        <tr class="${/failed/.test(e.action) ? "alert-row" : ""}">
+          <td>${App.dateTime(e.at)}</td>
+          <td>${escapeHTML(e.actorName || "—")}${e.actorRole ? ` <span class="muted small">${escapeHTML(e.actorRole)}</span>` : ""}</td>
+          <td>${escapeHTML(ACTION_LABELS[e.action] || e.action)}</td>
+          <td class="muted small">${escapeHTML(detailsText(e.details))}${e.ip ? ` · IP ${escapeHTML(e.ip)}` : ""}</td>
+        </tr>`).join("") : emptyRow(4, "No activity yet.");
+    }
+
+    filter.addEventListener("change", () => load().catch(error => {
+      body.querySelector("#activityRows").innerHTML = emptyRow(4, error.message);
+    }));
+    await load();
+  }
+
   const router = App.mountPages({
     analytics: { title: "Analytics", eyebrow: "SHOP PERFORMANCE", description: "Live numbers from the queue and payments.", render: analytics },
     desk: { title: "Front Desk", eyebrow: "TODAY'S QUEUE", description: "Add walk-ins, call customers to free barbers, and take payment.", render: Desk.queue },
-    payments: { title: "Payments & Reports", eyebrow: "FINANCE", description: "Sales for any date range, by payment method. Download as CSV for Excel.", render: Desk.payments },
-    customers: { title: "Customers", eyebrow: "CUSTOMER RECORDS", description: "Customer accounts and walk-in visits.", render: Desk.customers },
+    payments: { title: "Payments & Reports", eyebrow: "FINANCE", description: "Sales for any date range, by payment method. Download as CSV for Excel.", render: (body, actions) => Desk.payments(body, actions, user) },
+    customers: { title: "Customers", eyebrow: "CUSTOMER RECORDS", description: "Customer accounts and walk-in visits.", render: (body, actions) => Desk.customers(body, actions, user) },
     barbers: { title: "Barbers", eyebrow: "MEET THE TEAM", description: "Add, edit or remove barbers, set who is on duty, and moderate reviews.", render: barbers },
     services: { title: "Services", eyebrow: "SERVICES AND PRICES", description: "What customers can choose, with prices and durations.", render: services },
     inventory: { title: "Inventory", eyebrow: "STOCK", description: "Products in stock. Items at or below their minimum are flagged.", render: inventory },
     staff: { title: "Staff", eyebrow: "ACCOUNTS", description: "Cashier and admin accounts.", render: staff },
+    activity: { title: "Activity Log", eyebrow: "SECURITY", description: "Who did what: sign-ins, failed sign-ins, discounts, voids, no-shows and account changes.", render: activity },
     account: { title: "My Account", eyebrow: "SECURITY", description: "Change your password.", render: (body, actions) => Desk.account(body, actions, user) }
   }, "analytics");
 

@@ -1,8 +1,10 @@
 const express = require("express");
+const rateLimit = require("express-rate-limit");
 const { requireAuth, optionalAuth, requireRole } = require("../middleware/auth");
 const { cleanText, validName, toObjectId } = require("../utils/validation");
 const { ticketCookie } = require("../utils/session");
 const { todayKey } = require("../utils/dates");
+const { audit } = require("../utils/security");
 
 const router = express.Router();
 const staffOnly = [requireAuth, requireRole("admin", "cashier")];
@@ -12,6 +14,17 @@ const WAITING = ["waiting", "assigned"];
 const ACTIVE = ["waiting", "assigned", "serving"];
 const PAYMENT_METHODS = ["cash", "gcash", "card", "other"];
 const DEFAULT_DURATION = 30;
+
+// Online joins: limits per device, and a cap on the waiting line, so nobody can flood the queue
+// with fake tickets. Walk-ins added by the cashier are not limited.
+const MAX_ONLINE_WAITING = Number(process.env.MAX_ONLINE_WAITING) || 60;
+const joinLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many queue requests from this device. Please ask at the counter." }
+});
 
 // "Juan Dela Cruz" -> "Juan C." for public screens.
 function shortName(name) {
@@ -181,7 +194,7 @@ async function callTicket(res, db, filter, barber, user, notFound) {
 // ---------- Customers ----------
 
 // Join the queue, signed in or as a guest.
-router.post("/", optionalAuth, async (req, res) => {
+router.post("/", joinLimiter, optionalAuth, async (req, res) => {
   const db = req.app.locals.db;
 
   if (req.user && req.user.role !== "customer") {
@@ -195,6 +208,11 @@ router.post("/", optionalAuth, async (req, res) => {
   const existing = await findOwnTicket(db, req);
   if (existing && ACTIVE.includes(existing.status)) {
     return res.status(409).json({ error: "You are already in today's queue." });
+  }
+
+  const waiting = await db.collection("queueTickets").countDocuments({ queueDate: todayKey(), status: { $in: WAITING } });
+  if (waiting >= MAX_ONLINE_WAITING) {
+    return res.status(503).json({ error: "The queue is full right now. Please ask at the counter." });
   }
 
   const { fields, error } = await readOrder(db, req.body);
@@ -378,9 +396,17 @@ router.post("/:id/complete", ...staffOnly, async (req, res) => {
   const current = await db.collection("queueTickets").findOne({ _id: id });
   if (!current) return res.status(404).json({ error: "Ticket not found." });
 
+  const listPrice = Number(current.price) || 0;
   const rawAmount = req.body.amount;
-  const amount = rawAmount === undefined || rawAmount === "" || rawAmount === null ? Number(current.price) : Number(rawAmount);
+  const amount = rawAmount === undefined || rawAmount === "" || rawAmount === null ? listPrice : Number(rawAmount);
   if (!Number.isFinite(amount) || amount < 0 || amount > 100000) return res.status(400).json({ error: "Enter a valid amount." });
+
+  // Charging less than the service price needs a reason, so discounts can be reviewed later.
+  const note = cleanText(req.body.note, 200);
+  const discount = Math.round(Math.max(0, listPrice - amount) * 100) / 100;
+  if (discount > 0 && note.length < 3) {
+    return res.status(400).json({ error: `The amount is ${discount} below the price. Enter a reason for the discount.` });
+  }
 
   const ticket = await db.collection("queueTickets").findOneAndUpdate(
     { _id: id, status: "serving" },
@@ -400,8 +426,10 @@ router.post("/:id/complete", ...staffOnly, async (req, res) => {
     barberId: ticket.barberId,
     barberName: ticket.barberName,
     amount: Math.round(amount * 100) / 100,
+    listPrice,
+    discount,
     method,
-    note: cleanText(req.body.note, 200),
+    note,
     cashierId: req.user._id,
     cashierName: req.user.name,
     createdAt: new Date()
@@ -412,6 +440,10 @@ router.post("/:id/complete", ...staffOnly, async (req, res) => {
     { _id: ticket._id },
     { $set: { paymentId: result.insertedId, amountPaid: payment.amount } }
   );
+
+  if (discount > 0) {
+    await audit(req, "payment.discount", { queueNumber: ticket.queueNumber, customer: ticket.customerName, price: listPrice, charged: payment.amount, reason: note });
+  }
 
   res.json({ message: "Visit completed and payment recorded.", ticket: ticketView({ ...ticket, amountPaid: payment.amount }) });
 });
@@ -426,6 +458,7 @@ router.post("/:id/no-show", ...staffOnly, async (req, res) => {
   );
 
   if (!ticket) return res.status(409).json({ error: "This customer is no longer in the queue." });
+  await audit(req, "queue.no-show", { queueNumber: ticket.queueNumber, customer: ticket.customerName });
   res.json({ message: `#${ticket.queueNumber} marked as no-show.` });
 });
 
@@ -439,6 +472,7 @@ router.post("/:id/cancel", ...staffOnly, async (req, res) => {
   );
 
   if (!ticket) return res.status(409).json({ error: "Only waiting customers can be cancelled." });
+  await audit(req, "queue.cancelled", { queueNumber: ticket.queueNumber, customer: ticket.customerName });
   res.json({ message: `#${ticket.queueNumber} cancelled.` });
 });
 
@@ -448,6 +482,7 @@ router.delete("/", requireAuth, requireRole("admin"), async (req, res) => {
     { $set: { status: "cancelled", endedAt: new Date() } }
   );
 
+  await audit(req, "queue.cleared", { cancelled: result.modifiedCount });
   res.json({ message: `Cleared ${result.modifiedCount} waiting customer(s).` });
 });
 

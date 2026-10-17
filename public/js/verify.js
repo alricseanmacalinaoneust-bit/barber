@@ -27,7 +27,7 @@ document.addEventListener("DOMContentLoaded", () => {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "same-origin",
-        body: JSON.stringify({ code })
+        body: JSON.stringify({ code, remember: document.getElementById("rememberDevice").checked })
       });
 
       const data = await response.json().catch(() => ({}));

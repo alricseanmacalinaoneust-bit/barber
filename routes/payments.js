@@ -1,7 +1,8 @@
 const express = require("express");
 const { requireAuth, requireRole } = require("../middleware/auth");
-const { toObjectId } = require("../utils/validation");
+const { cleanText, toObjectId } = require("../utils/validation");
 const { todayKey, validDateKey, startOfDay, addDays } = require("../utils/dates");
+const { audit } = require("../utils/security");
 
 const router = express.Router();
 const staffOnly = [requireAuth, requireRole("admin", "cashier")];
@@ -17,13 +18,20 @@ function paymentView(p) {
     barberName: p.barberName || null,
     quantity: p.quantity ?? null,
     amount: p.amount,
+    listPrice: p.listPrice ?? null,
+    discount: p.discount || 0,
+    note: p.note || "",
     method: p.method,
     cashierName: p.cashierName,
-    createdAt: p.createdAt
+    createdAt: p.createdAt,
+    voided: p.voided === true,
+    voidReason: p.voidReason || "",
+    voidedByName: p.voidedByName || "",
+    replacesPaymentId: p.replacesPaymentId ? String(p.replacesPaymentId) : null
   };
 }
 
-// Payments between two dates (inclusive), with totals. Defaults to today.
+// Payments between two dates (inclusive), with totals. Voided payments are listed but not counted.
 router.get("/", ...staffOnly, async (req, res) => {
   const from = req.query.from || todayKey();
   const to = req.query.to || from;
@@ -41,9 +49,24 @@ router.get("/", ...staffOnly, async (req, res) => {
     .sort({ createdAt: -1 })
     .toArray();
 
-  const totals = { count: payments.length, total: 0, services: 0, products: 0, byMethod: { cash: 0, gcash: 0, card: 0, other: 0 } };
+  const totals = {
+    count: 0,
+    total: 0,
+    services: 0,
+    products: 0,
+    discounts: 0,
+    voided: 0,
+    byMethod: { cash: 0, gcash: 0, card: 0, other: 0 }
+  };
+
   for (const p of payments) {
+    if (p.voided) {
+      totals.voided += 1;
+      continue;
+    }
+    totals.count += 1;
     totals.total += p.amount;
+    totals.discounts += p.discount || 0;
     totals[p.type === "product" ? "products" : "services"] += p.amount;
     totals.byMethod[p.method] = (totals.byMethod[p.method] || 0) + p.amount;
   }
@@ -89,6 +112,8 @@ router.post("/product-sale", ...staffOnly, async (req, res) => {
     description: item.name,
     quantity,
     amount: Math.round(item.price * quantity * 100) / 100,
+    listPrice: Math.round(item.price * quantity * 100) / 100,
+    discount: 0,
     method,
     cashierId: req.user._id,
     cashierName: req.user.name,
@@ -102,6 +127,81 @@ router.post("/product-sale", ...staffOnly, async (req, res) => {
     payment: paymentView({ _id: result.insertedId, ...payment }),
     remainingStock: item.quantity
   });
+});
+
+// ADMIN: void a payment recorded by mistake, with a reason. Optionally record the corrected payment.
+// Product sales go back into stock.
+router.post("/:id/void", requireAuth, requireRole("admin"), async (req, res) => {
+  const db = req.app.locals.db;
+  const id = toObjectId(req.params.id);
+  if (!id) return res.status(400).json({ error: "Invalid payment ID." });
+
+  const reason = cleanText(req.body.reason, 200);
+  if (reason.length < 3) return res.status(400).json({ error: "Enter a reason for voiding this payment." });
+
+  const hasReplacement = req.body.replacementAmount !== undefined && req.body.replacementAmount !== "" && req.body.replacementAmount !== null;
+  const replacementAmount = Number(req.body.replacementAmount);
+  const replacementMethod = String(req.body.replacementMethod || "").toLowerCase();
+
+  if (hasReplacement) {
+    if (!Number.isFinite(replacementAmount) || replacementAmount < 0 || replacementAmount > 100000) {
+      return res.status(400).json({ error: "Enter a valid corrected amount." });
+    }
+    if (!PAYMENT_METHODS.includes(replacementMethod)) return res.status(400).json({ error: "Choose the corrected payment method." });
+  }
+
+  const payment = await db.collection("payments").findOneAndUpdate(
+    { _id: id, voided: { $ne: true } },
+    { $set: { voided: true, voidReason: reason, voidedBy: req.user._id, voidedByName: req.user.name, voidedAt: new Date() } }
+  );
+
+  if (!payment) return res.status(409).json({ error: "This payment was not found or is already voided." });
+
+  if (payment.type === "product" && payment.inventoryId) {
+    await db.collection("inventory").updateOne({ _id: payment.inventoryId }, { $inc: { quantity: payment.quantity } });
+    await db.collection("inventoryEvents").insertOne({
+      inventoryId: payment.inventoryId,
+      type: "returned",
+      quantityChange: payment.quantity,
+      createdAt: new Date()
+    });
+  }
+
+  let replacement = null;
+  if (hasReplacement) {
+    const { _id, voided, voidReason, voidedBy, voidedByName, voidedAt, ...original } = payment;
+    replacement = {
+      ...original,
+      amount: Math.round(replacementAmount * 100) / 100,
+      discount: Math.round(Math.max(0, (payment.listPrice ?? replacementAmount) - replacementAmount) * 100) / 100,
+      method: replacementMethod,
+      note: `Correction: ${reason}`,
+      replacesPaymentId: payment._id,
+      cashierId: req.user._id,
+      cashierName: req.user.name,
+      createdAt: new Date()
+    };
+    const result = await db.collection("payments").insertOne(replacement);
+    replacement._id = result.insertedId;
+  }
+
+  if (payment.ticketId) {
+    await db.collection("queueTickets").updateOne(
+      { _id: payment.ticketId },
+      { $set: { amountPaid: replacement ? replacement.amount : 0, paymentId: replacement ? replacement._id : null } }
+    );
+  }
+
+  await audit(req, "payment.voided", {
+    description: payment.description,
+    amount: payment.amount,
+    method: payment.method,
+    reason,
+    correctedAmount: replacement?.amount ?? null,
+    correctedMethod: replacement?.method ?? null
+  });
+
+  res.json({ message: replacement ? "Payment voided and the corrected payment recorded." : "Payment voided." });
 });
 
 module.exports = router;

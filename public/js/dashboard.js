@@ -33,6 +33,8 @@
 
   $("welcomeTitle").textContent = `Welcome, ${name}!`;
   $("customerGreeting").textContent = account ? `Hi, ${name}` : `Hi, ${name} (guest)`;
+  $("accountNav").classList.toggle("hidden", !account);
+  $("passwordBanner").classList.toggle("hidden", !account?.mustChangePassword);
 
   // ---------- Pages ----------
 
@@ -41,7 +43,8 @@
     queue: "My Queue",
     barbers: "Our Barbers",
     rating: "Rate a Barber",
-    visits: "My Visits"
+    visits: "My Visits",
+    account: "My Account"
   };
 
   function openPage(page) {
@@ -60,7 +63,10 @@
     if (page === "barbers") loadBarbers();
     if (page === "rating") prepareRating();
     if (page === "visits") loadVisits();
+    if (page === "account" && account) Desk.account($("accountContent"), null, account);
   }
+
+  $("changePasswordLink").addEventListener("click", () => openPage("account"));
 
   document.querySelectorAll(".nav-link[data-page]").forEach(button => {
     button.addEventListener("click", () => openPage(button.dataset.page));
@@ -97,7 +103,8 @@
     serving: "It's your turn",
     completed: "Completed",
     "no-show": "Missed (no-show)",
-    cancelled: "Left the queue"
+    cancelled: "Left the queue",
+    expired: "Expired"
   };
 
   function renderTicket() {
@@ -312,9 +319,9 @@
     if (!account) {
       box.innerHTML = `
         <div class="card">
-          <h2>Keep track of your visits</h2>
-          <p class="muted">You're using the queue as a guest. Create a free account to see your past visits and rate them any time.</p>
-          <a class="primary-btn" href="/login.html#register">Create an account</a>
+          <h2>Want to keep track of your visits?</h2>
+          <p class="muted">You don't need an account to get a haircut. If you'd like to see your past visits and rate them any time, you can create a free account. ${state.ticket ? "Today's visit will be added to it." : ""}</p>
+          <a class="primary-btn" href="/login.html#register">Create an account (optional)</a>
         </div>`;
       return;
     }

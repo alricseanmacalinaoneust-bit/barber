@@ -2,6 +2,7 @@ const express = require("express");
 const { requireAuth, optionalAuth, requireRole } = require("../middleware/auth");
 const { cleanText, validName, toObjectId } = require("../utils/validation");
 const { todayKey } = require("../utils/dates");
+const { audit } = require("../utils/security");
 
 const router = express.Router();
 
@@ -103,6 +104,7 @@ router.patch("/:id", requireAuth, requireRole("admin"), async (req, res) => {
   try {
     const result = await req.app.locals.db.collection("barbers").updateOne({ _id: id }, { $set: value });
     if (!result.matchedCount) return res.status(404).json({ error: "Barber not found." });
+    if (value.active) await audit(req, "barber.restored", { barber: value.name });
     res.json({ message: "Barber updated." });
   } catch (err) {
     if (err.code === 11000) return res.status(409).json({ error: "A barber with this name already exists." });
@@ -119,10 +121,17 @@ router.delete("/:id", requireAuth, requireRole("admin"), async (req, res) => {
   const serving = await db.collection("queueTickets").findOne({ barberId: id, status: "serving", queueDate: todayKey() });
   if (serving) return res.status(409).json({ error: `This barber is serving #${serving.queueNumber}. Complete that visit first.` });
 
-  const result = await db.collection("barbers").updateOne({ _id: id }, { $set: { active: false, available: false } });
-  if (!result.matchedCount) return res.status(404).json({ error: "Barber not found." });
+  const barber = await db.collection("barbers").findOneAndUpdate({ _id: id }, { $set: { active: false, available: false } });
+  if (!barber) return res.status(404).json({ error: "Barber not found." });
 
-  res.json({ message: "Barber removed." });
+  // Customers waiting for this barber can now be called by anyone.
+  const released = await db.collection("queueTickets").updateMany(
+    { queueDate: todayKey(), status: { $in: ["waiting", "assigned"] }, preferredBarberId: id },
+    { $set: { preferredBarberId: null, preferredBarberName: null } }
+  );
+
+  await audit(req, "barber.removed", { barber: barber.name, customersReleased: released.modifiedCount });
+  res.json({ message: `Barber removed.${released.modifiedCount ? ` ${released.modifiedCount} waiting customer(s) can now be served by any barber.` : ""}` });
 });
 
 // ADMIN OR CASHIER: mark a barber on duty (available) or off duty.
@@ -168,9 +177,10 @@ router.delete("/ratings/:ratingId", requireAuth, requireRole("admin"), async (re
   const id = toObjectId(req.params.ratingId);
   if (!id) return res.status(400).json({ error: "Invalid review ID." });
 
-  const result = await req.app.locals.db.collection("barberRatings").deleteOne({ _id: id });
-  if (!result.deletedCount) return res.status(404).json({ error: "Review not found." });
+  const review = await req.app.locals.db.collection("barberRatings").findOneAndDelete({ _id: id });
+  if (!review) return res.status(404).json({ error: "Review not found." });
 
+  await audit(req, "review.deleted", { customer: review.customerName, rating: review.rating, comment: review.comment });
   res.json({ message: "Review deleted." });
 });
 

@@ -4,10 +4,10 @@ document.addEventListener("DOMContentLoaded", () => {
   const loginMessage = $("loginMessage");
 
   const notes = {
-    guestForm: "No account needed. You'll get a queue number on the next page.",
-    customerLoginForm: "Sign in to keep a history of your visits.",
-    registerForm: "An account lets you see your past visits and rate them any time.",
-    staffForm: "For cashiers and admins. Admins confirm with a code sent to their email."
+    guestForm: "Walk-ins just need a name. You'll get your queue number on the next page.",
+    customerLoginForm: "Accounts are optional. They keep a history of your visits.",
+    registerForm: "Optional: an account keeps your visit history so you can rate visits any time. If you joined today on this device, that visit is added to your account.",
+    staffForm: "For cashiers and admins. Admins confirm with an emailed code, which can be remembered on this device for 30 days."
   };
 
   function showMessage(message, success = false) {
@@ -18,9 +18,6 @@ document.addEventListener("DOMContentLoaded", () => {
   function showForm(formId) {
     ["guestForm", "customerLoginForm", "registerForm", "staffForm"].forEach(id => {
       $(id).hidden = id !== formId;
-    });
-    document.querySelectorAll(".login-subtab").forEach(button => {
-      button.classList.toggle("active", button.dataset.form === formId);
     });
     $("loginNote").textContent = notes[formId];
     showMessage("");
@@ -83,7 +80,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   $("customerTab").addEventListener("click", () => showCustomer());
   $("staffTab").addEventListener("click", showStaff);
-  document.querySelectorAll(".login-subtab").forEach(button => {
+  document.querySelectorAll("#customerPanel [data-form]").forEach(button => {
     button.addEventListener("click", () => showForm(button.dataset.form));
   });
 
